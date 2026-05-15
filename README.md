@@ -41,6 +41,16 @@ deployment/         Linux deployment scripts, systemd units, and nginx example
    pip install -e .[dev]
    ```
 
+Seed development IDs before running agent flows that depend on `DEFAULT_WORKSPACE_ID` and `DEFAULT_USER_ID`:
+
+```powershell
+docker compose up -d postgres redis qdrant
+alembic upgrade head
+python scripts/seed_dev.py
+```
+
+Copy the printed `DEFAULT_WORKSPACE_ID` and `DEFAULT_USER_ID` values into `.env`.
+
 5. Start the API:
 
    ```powershell

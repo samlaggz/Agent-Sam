@@ -1,0 +1,34 @@
+name: scraping_pipeline
+version: 1
+description: Run a bounded scraping and extraction workflow for public web sources.
+triggers:
+  - scrape public pages
+  - collect web records
+  - extract structured website data
+inputs:
+  - name: target_urls
+    type: list[string]
+    required: true
+    description: Public URLs that define the scrape scope.
+  - name: extraction_goal
+    type: string
+    required: true
+    description: The specific fields or records to extract.
+procedure:
+  - Confirm the target scope, public access constraints, and output schema before fetching data.
+  - Fetch pages with bounded concurrency and record raw responses for debugging.
+  - Extract structured records, validate required fields, and summarize gaps or retries.
+tools_allowed:
+  - shell_command
+  - health_snapshot
+risk_notes:
+  - Respect robots.txt, published rate limits, and legal restrictions.
+  - Do not collect data behind authentication, paywalls, or explicit anti-automation controls without approval.
+failure_modes:
+  - The target site blocks requests or changes its markup during collection.
+  - The extracted records are incomplete, duplicated, or inconsistent across pages.
+evaluation_checklist:
+  - The scrape scope and target URLs are explicit.
+  - Rate limiting and retry strategy are documented.
+  - The output schema is validated before handoff.
+  - The final report lists extraction gaps and confidence.

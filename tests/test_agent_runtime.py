@@ -1,0 +1,331 @@
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from uuid import UUID
+
+import pytest
+import pytest_asyncio
+import yaml
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from agent.graph import AgentGraphRunner
+from agent.model_client import PlannedStep
+from app.config import Settings
+from db.memory_service import MemoryCreateRequest, save_memory
+from db.models import Approval, Memory, Task, TaskStep, ToolCall, User, Workspace
+from db.repositories import create_task
+
+
+pytestmark = pytest.mark.asyncio
+
+
+@dataclass
+class FakePlanningModel:
+    planned_steps: list[PlannedStep]
+
+    def __post_init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def create_plan(
+        self,
+        *,
+        task: dict[str, Any],
+        memory_context: list[dict[str, Any]],
+        skill_context: list[dict[str, Any]],
+        task_run_id,
+    ) -> list[PlannedStep]:
+        self.calls.append(
+            {
+                "task": task,
+                "memory_context": memory_context,
+                "skill_context": skill_context,
+                "task_run_id": task_run_id,
+            }
+        )
+        return list(self.planned_steps)
+
+
+class FakeProgressReporter:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def report(self, task_id, text: str, *, stage: str) -> None:
+        self.messages.append({"task_id": task_id, "text": text, "stage": stage})
+
+
+@pytest_asyncio.fixture
+async def agent_task(session: AsyncSession, workspace: Workspace, user: User) -> Task:
+    return await create_task(
+        session,
+        workspace_id=workspace.id,
+        title="Investigate deployment regression",
+        description="Review the API deployment flow and capture safe diagnostic context.",
+        created_by_user_id=user.id,
+        metadata_json={
+            "source": "telegram",
+            "source_chat_id": "123456",
+            "source_user_id": "telegram-user-1",
+            "tags": ["deploy", "api"],
+        },
+    )
+
+
+def build_agent_runner(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    planning_model: FakePlanningModel,
+    progress_reporter: FakeProgressReporter,
+    skills_root: Path,
+    allowed_tool_roots: list[str | Path],
+) -> AgentGraphRunner:
+    return AgentGraphRunner(
+        session_factory,
+        settings=Settings(litellm_model="test-model"),
+        planning_model=planning_model,
+        progress_reporter=progress_reporter,
+        skills_root=skills_root,
+        allowed_tool_roots=allowed_tool_roots,
+    )
+
+
+def build_skill_yaml(name: str, description: str, *, tools_allowed: list[str]) -> str:
+        payload = {
+                "name": name,
+                "version": 1,
+                "description": description,
+                "triggers": ["deployment task", "runtime diagnostics"],
+                "inputs": [
+                        {
+                                "name": "task_text",
+                                "type": "string",
+                                "required": True,
+                                "description": "Incoming task request.",
+                        }
+                ],
+                "procedure": [
+                        "Review the task objective and restate the safe next action.",
+                        "Use only the listed tools when a step requires execution.",
+                ],
+                "tools_allowed": tools_allowed,
+                "risk_notes": ["Escalate risky actions for explicit approval."],
+                "failure_modes": ["The task does not include enough detail to continue safely."],
+                "evaluation_checklist": [
+                        "The tool choice matches the task objective.",
+                        "The execution plan stays within the approved safety boundary.",
+                ],
+        }
+        return yaml.safe_dump(payload, sort_keys=False)
+
+
+async def test_agent_runtime_completes_safe_plan(
+    session_factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    workspace: Workspace,
+    user: User,
+    agent_task: Task,
+    tmp_path: Path,
+) -> None:
+    await save_memory(
+        session,
+        MemoryCreateRequest(
+            workspace_id=workspace.id,
+            user_id=user.id,
+            task_id=agent_task.id,
+            memory_type="project_fact",
+            scope="workspace",
+            source="runbook",
+            confidence=0.9,
+            content="Deployments should verify API health before any cutover.",
+            tags=("deploy", "api"),
+        ),
+    )
+
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    (skills_root / "deployment_triage.yaml").write_text(
+        build_skill_yaml(
+            "deployment_triage",
+            "Safe deployment diagnostics for the API service.",
+            tools_allowed=["health_snapshot"],
+        ),
+        encoding="utf-8",
+    )
+
+    planning_model = FakePlanningModel(
+        [
+            PlannedStep(
+                title="Review deployment context",
+                description="Review the deployment context and confirm the target surface.",
+            ),
+            PlannedStep(
+                title="Capture a safe health snapshot",
+                description="Capture a minimal runtime health snapshot.",
+                tool_name="health_snapshot",
+                reason="Collect a safe signal before making any further decisions.",
+            ),
+        ]
+    )
+    progress_reporter = FakeProgressReporter()
+    runner = build_agent_runner(
+        session_factory,
+        planning_model=planning_model,
+        progress_reporter=progress_reporter,
+        skills_root=skills_root,
+        allowed_tool_roots=[tmp_path],
+    )
+
+    result = await runner.run_task(agent_task.id)
+
+    assert result.status == "completed"
+    assert planning_model.calls
+    assert planning_model.calls[0]["memory_context"]
+    assert planning_model.calls[0]["skill_context"]
+
+    async with session_factory() as verification_session:
+        task_steps = list(
+            (
+                await verification_session.execute(
+                    select(TaskStep)
+                    .where(TaskStep.task_id == agent_task.id)
+                    .order_by(TaskStep.position.asc())
+                )
+            ).scalars()
+        )
+        subtasks = list(
+            (
+                await verification_session.execute(
+                    select(Task)
+                    .where(Task.parent_task_id == agent_task.id)
+                    .order_by(Task.created_at.asc())
+                )
+            ).scalars()
+        )
+        tool_calls = list(
+            (
+                await verification_session.execute(
+                    select(ToolCall)
+                    .where(ToolCall.task_id == agent_task.id)
+                    .order_by(ToolCall.created_at.asc())
+                )
+            ).scalars()
+        )
+        task_memories = list(
+            (
+                await verification_session.execute(
+                    select(Memory)
+                    .where(Memory.task_id == agent_task.id, Memory.source == "agent")
+                    .order_by(Memory.created_at.asc())
+                )
+            ).scalars()
+        )
+
+    assert len(task_steps) == 2
+    assert all(step.status == "completed" for step in task_steps)
+    assert len(subtasks) == 2
+    assert all(subtask.status == "completed" for subtask in subtasks)
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_name == "health_snapshot"
+    assert tool_calls[0].status == "completed"
+    assert len(task_memories) >= 3
+    assert any(message["stage"] == "report_result" for message in progress_reporter.messages)
+
+
+async def test_agent_runtime_pauses_for_approval_and_resumes_after_review(
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_task: Task,
+    tmp_path: Path,
+    user: User,
+) -> None:
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    (skills_root / "command_review.yaml").write_text(
+        build_skill_yaml(
+            "command_review",
+            "Require approval before running mutable commands.",
+            tools_allowed=["shell_command"],
+        ),
+        encoding="utf-8",
+    )
+
+    command = f'"{sys.executable}" -c "print(\'agent-approved-run\')"'
+    planning_model = FakePlanningModel(
+        [
+            PlannedStep(
+                title="Run reviewed diagnostic command",
+                description="Run a reviewed diagnostic command after approval.",
+                tool_name="shell_command",
+                command=command,
+                reason="The task requires a reviewed runtime diagnostic.",
+            )
+        ]
+    )
+    progress_reporter = FakeProgressReporter()
+    runner = build_agent_runner(
+        session_factory,
+        planning_model=planning_model,
+        progress_reporter=progress_reporter,
+        skills_root=skills_root,
+        allowed_tool_roots=[tmp_path],
+    )
+
+    first_result = await runner.run_task(agent_task.id)
+
+    assert first_result.status == "paused"
+    assert first_result.approval_id is not None
+    assert len(planning_model.calls) == 1
+
+    async with session_factory() as approval_session:
+        approval = await approval_session.get(Approval, first_result.approval_id)
+        assert approval is not None
+
+        task_step = await approval_session.scalar(select(TaskStep).where(TaskStep.task_id == agent_task.id))
+        assert task_step is not None
+        tool_call_id = UUID(task_step.metadata_json.get("tool_call_id"))
+        tool_call = await approval_session.get(ToolCall, tool_call_id)
+
+        assert tool_call is not None
+        assert tool_call.status == "pending_approval"
+
+        tool_call.approved_by_user = True
+        approval.status = "approved"
+        approval.reviewed_by_user_id = user.id
+        approval.reviewed_at = datetime.now(timezone.utc)
+        await approval_session.commit()
+
+    second_result = await runner.run_task(agent_task.id)
+
+    assert second_result.status == "completed"
+    assert len(planning_model.calls) == 1
+
+    async with session_factory() as verification_session:
+        task_steps = list(
+            (
+                await verification_session.execute(
+                    select(TaskStep)
+                    .where(TaskStep.task_id == agent_task.id)
+                    .order_by(TaskStep.position.asc())
+                )
+            ).scalars()
+        )
+        tool_calls = list(
+            (
+                await verification_session.execute(
+                    select(ToolCall)
+                    .where(ToolCall.task_id == agent_task.id)
+                    .order_by(ToolCall.created_at.asc())
+                )
+            ).scalars()
+        )
+
+    assert len(task_steps) == 1
+    assert task_steps[0].status == "completed"
+    assert len(tool_calls) == 1
+    assert tool_calls[0].status == "completed"
+    assert "agent-approved-run" in (tool_calls[0].output_text or "")
+    assert any("requires approval" in message["text"].lower() for message in progress_reporter.messages)
+    assert any(message["stage"] == "report_result" for message in progress_reporter.messages)

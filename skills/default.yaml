@@ -1,0 +1,26 @@
+name: default_router
+version: 1
+description: Route a new task toward the right specialist skill before any execution happens.
+triggers:
+  - generic request
+  - router fallback
+inputs:
+  - name: task_text
+    type: string
+    required: true
+    description: The incoming task description.
+procedure:
+  - Read the task description and identify the dominant domain.
+  - Match the task against the highest-signal specialist skill.
+  - If no strong match exists, fall back to a conservative reasoning-only plan.
+tools_allowed:
+  - health_snapshot
+risk_notes:
+  - Do not route a risky execution request to shell tools without a specialist skill and approval path.
+failure_modes:
+  - The task description mixes several domains and no clear skill match emerges.
+  - The request omits the context needed to select a specialist skill safely.
+evaluation_checklist:
+  - The selected skill matches the task domain.
+  - No risky tool is introduced during routing.
+  - The fallback path stays conservative when the route is ambiguous.

@@ -1,0 +1,34 @@
+name: server_ops
+version: 1
+description: Diagnose and operate long-running services with conservative runtime checks.
+triggers:
+  - restart a service
+  - inspect server health
+  - investigate runtime incident
+inputs:
+  - name: service_name
+    type: string
+    required: true
+    description: The service or unit to inspect.
+  - name: objective
+    type: string
+    required: true
+    description: The operational goal or incident summary.
+procedure:
+  - Gather safe health signals and recent service context before proposing any mutable action.
+  - Prefer read-only diagnostics first, then stage the smallest necessary change.
+  - Escalate high-risk actions, summarize impact, and report the final service state.
+tools_allowed:
+  - health_snapshot
+  - shell_command
+risk_notes:
+  - Restarts, package changes, and filesystem mutations may require explicit approval.
+  - Always verify the working directory, target host, and service name before execution.
+failure_modes:
+  - Diagnostics are gathered from the wrong host or service unit.
+  - A mutable command is executed without a clear rollback or approval path.
+evaluation_checklist:
+  - Read-only diagnostics happened before mutable actions.
+  - The target service and environment were verified.
+  - High-risk actions were paused for approval.
+  - The final report includes impact and rollback notes.

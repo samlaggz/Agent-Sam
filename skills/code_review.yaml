@@ -1,0 +1,32 @@
+name: code_review
+version: 1
+description: Review a code change for correctness, regressions, safety, and missing tests.
+triggers:
+  - review this patch
+  - inspect code changes
+  - find regressions in a diff
+inputs:
+  - name: change_scope
+    type: string
+    required: true
+    description: The file set, diff, or feature under review.
+  - name: review_goal
+    type: string
+    required: false
+    description: Any special focus such as security, performance, or test coverage.
+procedure:
+  - Identify the behavioral contract of the changed code before judging the implementation.
+  - Look for correctness bugs, regressions, missing validation, and untested branches.
+  - Report findings first, ordered by severity, with concrete evidence and minimal summary.
+tools_allowed:
+  - health_snapshot
+risk_notes:
+  - Avoid approving speculative changes without evidence from the code or tests.
+  - Do not rely on style-only observations when correctness risks exist.
+failure_modes:
+  - The review misses a changed control path or an edge case hidden behind helper code.
+  - Findings are reported without enough context to reproduce or verify them.
+evaluation_checklist:
+  - Findings focus on correctness, risk, and missing tests.
+  - Each finding points to a concrete code path or behavior.
+  - The summary stays secondary to actionable review items.

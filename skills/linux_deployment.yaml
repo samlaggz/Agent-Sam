@@ -1,0 +1,34 @@
+name: linux_deployment
+version: 1
+description: Plan and execute a cautious Linux deployment with verification and rollback awareness.
+triggers:
+  - deploy on linux
+  - rollout service update
+  - perform production release
+inputs:
+  - name: deployment_target
+    type: string
+    required: true
+    description: The host, environment, or service being deployed.
+  - name: release_scope
+    type: string
+    required: true
+    description: The artifact or code change being released.
+procedure:
+  - Verify the target environment, release artifact, and rollback prerequisites before starting.
+  - Run pre-deployment checks, stage the release, and validate service health after rollout.
+  - If validation fails, stop the rollout and prepare rollback steps before further changes.
+tools_allowed:
+  - health_snapshot
+  - shell_command
+risk_notes:
+  - Production deployments can interrupt service and must respect approval requirements for risky commands.
+  - Never continue a rollout after failing validation without an explicit rollback decision.
+failure_modes:
+  - The deployment runs against the wrong host, branch, or artifact.
+  - Post-deployment validation is skipped or interpreted incorrectly.
+evaluation_checklist:
+  - The target environment and artifact were verified.
+  - Health checks ran before and after deployment.
+  - Rollback criteria were documented.
+  - The final result includes validation evidence.

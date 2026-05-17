@@ -173,6 +173,11 @@ class AgentGatewayService:
         if inherited_task_text is not None:
             intent = "task"
         if intent == "chat":
+            enriched_text = await self._enrich_with_recent_path_context(session, incoming, incoming.text)
+            if enriched_text != incoming.text:
+                task = await self._create_task_from_text(session, incoming, message, task_text=enriched_text)
+                route_preview = self._route_task_preview(task.title, task.description or "")
+                return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
             return await self._handle_chat_message(session, message, incoming)
         task = await self._create_task_from_text(session, incoming, message, task_text=text_for_intent)
         route_preview = self._route_task_preview(task.title, task.description or "")
@@ -1285,6 +1290,45 @@ class AgentGatewayService:
             "did you find anything",
         )
         return any(phrase in normalized_text for phrase in phrases)
+
+    def _is_path_reference(self, text: str) -> bool:
+        path_patterns = re.compile(r"(/[a-zA-Z0-9_.\-]+){2,}|/var/|/opt/|/etc/|/home/|/srv/")
+        return bool(path_patterns.search(text))
+
+    def _is_folder_contents_question(self, normalized_text: str) -> bool:
+        phrases = (
+            "what is in",
+            "what's in",
+            "whats in",
+            "contents of",
+            "what's inside",
+            "whats inside",
+            "what files",
+            "list contents",
+            "show contents",
+            "what does it contain",
+        )
+        return any(phrase in normalized_text for phrase in phrases)
+
+    async def _enrich_with_recent_path_context(self, session: AsyncSession, incoming: IncomingGatewayMessage, text: str) -> str:
+        normalized_text = self._normalize_text(text)
+        if not self._is_folder_contents_question(normalized_text):
+            return text
+
+        result = await session.execute(
+            select(Message)
+            .where(Message.workspace_id == incoming.workspace_id, Message.user_id == incoming.user_id)
+            .order_by(Message.created_at.desc())
+            .limit(20)
+        )
+        recent_messages = result.scalars().all()
+        for msg in recent_messages:
+            if self._is_path_reference(msg.content):
+                match = re.search(r"(/[a-zA-Z0-9_.\-]+){2,}", msg.content)
+                if match:
+                    path = match.group(0)
+                    return f"List contents of {path} using ls -la"
+        return text
 
     def _parse_json_object(self, text: str) -> dict[str, Any] | None:
         cleaned = text.strip()

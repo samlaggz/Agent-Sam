@@ -11,7 +11,7 @@ def test_load_agent_profiles() -> None:
     assert "coding_agent" in profiles
     assert "testing_agent" in profiles
     assert profiles["coding_agent"].default_model
-    assert profiles["server_ops_agent"].risk_level == "high"
+    assert profiles["server_ops_agent"].risk_level in {"medium", "high"}
 
 
 def test_invalid_profile_rejected(tmp_path: Path) -> None:

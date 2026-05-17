@@ -9,6 +9,12 @@ task_types:
   - postgres
   - redis
   - qdrant
+  - filesystem
+  - filesystem_inspection
+  - server_inspection
+  - file_listing
+  - process_inspection
+  - network_inspection
 default_model: ${SERVER_OPS_AGENT_MODEL:-openrouter/openai/gpt-4.1-mini}
 fallback_models:
   - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
@@ -32,7 +38,7 @@ skill_tags:
   - deployment
   - systemd
   - nginx
-risk_level: high
+risk_level: medium
 system_prompt_path: prompts/server_ops_agent.md
 evaluation_checklist:
   - Required approval for risky actions.

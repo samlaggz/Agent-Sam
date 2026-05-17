@@ -118,7 +118,7 @@ An nginx reverse-proxy example is provided at `deployment/nginx/agent-api.conf`.
 ```bash
 sudo install -m 0644 /opt/agent-sam/deployment/nginx/agent-api.conf /etc/nginx/sites-available/agent-api.conf
 sudo nginx -t
-sudo systemctl reload nginx
+sudo systemctl reload-or-restart nginx
 ```
 
 ## Rollback example

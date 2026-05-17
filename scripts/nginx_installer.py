@@ -36,7 +36,7 @@ def install_nginx_config(
     if dry_run:
         output(f"Dry run: would install nginx config to {destination}")
         output(f"Dry run: would link {enabled_symlink} -> {destination}")
-        output("Dry run: would run nginx -t and reload nginx")
+        output("Dry run: would run nginx -t and reload or start nginx")
         return True
 
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
@@ -63,14 +63,14 @@ def install_nginx_config(
             output(f"Failed: {format_command(test_command)}")
             return False
 
-        reload_command = [*privileged_prefix, "systemctl", "reload", "nginx"]
+        reload_command = [*privileged_prefix, "systemctl", "reload-or-restart", "nginx"]
         reload_result = command_runner(reload_command, capture_output=True)
         if reload_result.returncode != 0:
             if reload_result.stderr:
                 output(reload_result.stderr.strip())
             output(f"Failed: {format_command(reload_command)}")
             return False
-        output("nginx configuration installed and reloaded.")
+        output("nginx configuration installed and applied.")
         return True
     finally:
         temp_path.unlink(missing_ok=True)

@@ -41,7 +41,7 @@ For nginx operations after editing the example config:
 
 - `install -m 0644 deployment/nginx/agent-api.conf /etc/nginx/sites-available/agent-api.conf`
 - `nginx -t`
-- `systemctl reload nginx`
+- `systemctl reload-or-restart nginx`
 
 ## Example sudoers sketch
 
@@ -69,7 +69,7 @@ Cmnd_Alias AGENTOS_RUNTIME = /usr/bin/systemctl start agent-api.service agent-wo
 
 Cmnd_Alias AGENTOS_NGINX = /usr/bin/install -m 0644 * /etc/nginx/sites-available/agent-api.conf, \
     /usr/sbin/nginx -t, \
-    /usr/bin/systemctl reload nginx
+    /usr/bin/systemctl reload-or-restart nginx
 
 deployer ALL=(root) NOPASSWD: AGENTOS_PROVISION, AGENTOS_RUNTIME, AGENTOS_NGINX
 ```

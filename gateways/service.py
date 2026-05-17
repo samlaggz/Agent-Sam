@@ -15,7 +15,9 @@ from agents.router import RouteRequest, RouterAgent
 from app.config import Settings
 from db.models import Approval, Message, Task, ToolCall, User, Workspace
 from db.task_queue import (
+    ACTIVE_TASK_STATUSES,
     TASK_PRIORITIES,
+    TERMINAL_TASK_STATUSES,
     cancel_task,
     create_task as create_task_request,
     get_queue_status,
@@ -161,6 +163,10 @@ class AgentGatewayService:
         message: Message,
         incoming: IncomingGatewayMessage,
     ) -> GatewayResponse:
+        management_reply = await self._maybe_handle_natural_language_task_management(session, message, incoming)
+        if management_reply is not None:
+            return management_reply
+
         inherited_task_text = await self._resolve_followup_task_text(session, incoming)
         text_for_intent = inherited_task_text or incoming.text
         intent = await self._decide_text_intent(incoming.text)
@@ -1175,8 +1181,80 @@ class AgentGatewayService:
                 continue
             if chat_id != incoming.gateway_chat.gateway_chat_id:
                 continue
+            if task.status not in TERMINAL_TASK_STATUSES:
+                return task
             return task
         return None
+
+    async def _maybe_handle_natural_language_task_management(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+    ) -> GatewayResponse | None:
+        normalized_text = self._normalize_text(incoming.text)
+
+        if self._is_queue_question(normalized_text):
+            queue_status = await get_queue_status(session, workspace_id=incoming.workspace_id)
+            pending_tasks = await list_task_queue(session, workspace_id=incoming.workspace_id, limit=5)
+            return GatewayResponse(text=self._format_queue_status(queue_status, pending_tasks))
+
+        if self._is_cancel_request(normalized_text):
+            task = await self._load_recent_task_for_chat(session, incoming)
+            if task is None:
+                return GatewayResponse(text="I couldn't find a recent task in this chat to cancel.")
+            if task.status in TERMINAL_TASK_STATUSES:
+                return GatewayResponse(text=f"That task is already {task.status}.", task_id=task.id)
+            cancelled = await cancel_task(session, task_id=task.id)
+            if cancelled is None:
+                return GatewayResponse(text="I couldn't cancel that task.")
+            await self._link_message_to_task(session, message, cancelled.id)
+            return GatewayResponse(
+                text=f"I cancelled the task `{cancelled.title}`. Current status: {cancelled.status}.",
+                task_id=cancelled.id,
+            )
+
+        if self._is_status_question(normalized_text):
+            task = await self._load_recent_task_for_chat(session, incoming)
+            if task is None:
+                return GatewayResponse(text="There isn't a recent task in this chat yet.")
+            subtasks = await list_subtasks(session, parent_task_id=task.id)
+            await self._link_message_to_task(session, message, task.id)
+            return GatewayResponse(text=self._format_task_status(task, len(subtasks)), task_id=task.id)
+
+        return None
+
+    def _is_queue_question(self, normalized_text: str) -> bool:
+        phrases = (
+            "any running or pending tasks",
+            "any pending task",
+            "any pending tasks",
+            "any queued task",
+            "any queued tasks",
+            "what are current queued or running task",
+            "what are current queued or running tasks",
+            "check queue",
+            "check pending task",
+            "check pending tasks",
+            "check and tell me if any pending task",
+            "check and tell me if any pending tasks",
+        )
+        return any(phrase in normalized_text for phrase in phrases)
+
+    def _is_cancel_request(self, normalized_text: str) -> bool:
+        phrases = ("delete this task", "cancel this task", "remove this task")
+        return any(phrase in normalized_text for phrase in phrases)
+
+    def _is_status_question(self, normalized_text: str) -> bool:
+        phrases = (
+            "what is the status",
+            "tell me status",
+            "status about",
+            "what is the progress",
+            "what are the progress",
+            "did you find anything",
+        )
+        return any(phrase in normalized_text for phrase in phrases)
 
     def _parse_json_object(self, text: str) -> dict[str, Any] | None:
         cleaned = text.strip()

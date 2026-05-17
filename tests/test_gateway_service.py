@@ -437,6 +437,73 @@ async def test_handle_new_queue_and_status_commands(
     assert "Title: Review deployment logs" in status_response.text
 
 
+async def test_natural_language_queue_question_returns_queue_status_without_creating_task(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(session_factory, workspace, user)
+    create_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/new Review deployment logs", gateway_name="telegram")
+    )
+    assert create_response.task_id is not None
+
+    response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "What are current queued or running task", gateway_name="telegram")
+    )
+
+    assert response.task_id is None
+    assert "Queue status" in response.text
+    assert "Pending:" in response.text
+
+
+async def test_natural_language_cancel_request_cancels_latest_chat_task(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(session_factory, workspace, user)
+    create_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/new Check shiva-drive folder", gateway_name="telegram")
+    )
+
+    response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Delete this task", gateway_name="telegram")
+    )
+
+    assert response.task_id == create_response.task_id
+    assert "I cancelled the task" in response.text
+
+
+async def test_natural_language_status_question_uses_latest_active_chat_task(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True),
+    )
+    create_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Check if shiva-drive folder is serving shivadrive.com", gateway_name="telegram")
+    )
+
+    async with session_factory() as session:
+        task = await session.get(Task, create_response.task_id)
+        assert task is not None
+        task.status = "running"
+        await session.commit()
+
+    response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "What is the progress", gateway_name="telegram")
+    )
+
+    assert response.task_id == create_response.task_id
+    assert "Status: running" in response.text
+
+
 async def test_handle_prioritize_pause_resume_and_cancel_commands(
     session_factory: async_sessionmaker[AsyncSession],
     workspace: Workspace,

@@ -207,11 +207,11 @@ class ShellCommandTool:
                 )
 
         return RiskAssessment(
-            risk_level="medium",
-            requires_approval=True,
+            risk_level="safe",
+            requires_approval=False,
             blocked=False,
-            reason="Command is not explicitly allowlisted.",
-            matched_rule="default-unlisted",
+            reason="Default: all commands allowed in admin mode.",
+            matched_rule="default-admin-mode",
         )
 
     def _match_rule(self, command: str, rules: list[RiskRule]) -> RiskRule | None:

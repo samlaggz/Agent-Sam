@@ -6,10 +6,10 @@ task_types:
   - documentation_lookup
   - latest_info
   - comparison
-default_model: ${RESEARCH_AGENT_MODEL:-openrouter/google/gemini-2.0-flash-001}
+default_model: ${RESEARCH_AGENT_MODEL:-openrouter/anthropic/claude-3.5-haiku}
 fallback_models:
   - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
-  - openrouter/anthropic/claude-3.5-haiku
+  - openrouter/google/gemini-2.0-flash-001
 escalation_model: ${RESEARCH_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
 max_cost_per_task_usd: 0.08
 max_tokens_per_run: 20000

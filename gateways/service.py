@@ -1216,6 +1216,22 @@ class AgentGatewayService:
     ) -> GatewayResponse | None:
         normalized_text = self._normalize_text(incoming.text)
 
+        if self._is_bulk_cancel_request(normalized_text):
+            all_active = await list_task_queue(
+                session,
+                workspace_id=incoming.workspace_id,
+                statuses=("pending", "running", "paused"),
+                limit=200,
+            )
+            cancelled_count = 0
+            for task in all_active:
+                if task.status not in TERMINAL_TASK_STATUSES:
+                    await cancel_task(session, task_id=task.id)
+                    cancelled_count += 1
+            if cancelled_count == 0:
+                return GatewayResponse(text="No active tasks to cancel. The queue is already empty.")
+            return GatewayResponse(text=f"Done. Cancelled {cancelled_count} task(s). The queue is now empty.")
+
         if self._is_queue_question(normalized_text) or self._is_queue_question(incoming.text.lower().strip()):
             queue_status = await get_queue_status(session, workspace_id=incoming.workspace_id)
             active_tasks = await list_task_queue(
@@ -1275,6 +1291,29 @@ class AgentGatewayService:
             "show pending tasks",
             "show running tasks",
             "show queue",
+            "how many tasks",
+            "how many task",
+            "tasks in queue",
+            "task in queue",
+            "in queue now",
+            "tell is there any pending",
+            "is there any pending",
+            "is there any task",
+            "any task in",
+        )
+        return any(phrase in normalized_text for phrase in phrases)
+
+    def _is_bulk_cancel_request(self, normalized_text: str) -> bool:
+        phrases = (
+            "remove all",
+            "clear all tasks",
+            "cancel all tasks",
+            "delete all tasks",
+            "clear queue",
+            "cancel all",
+            "delete all",
+            "remove all tasks",
+            "clear all",
         )
         return any(phrase in normalized_text for phrase in phrases)
 

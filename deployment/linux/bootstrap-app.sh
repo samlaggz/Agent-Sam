@@ -196,7 +196,7 @@ else
 fi
 
 echo "Running production doctor"
-"${VENV_DIR}/bin/python" -m scripts.doctor --production --env-path "${ENV_FILE}" --app-dir "${REPO_ROOT}"
+"${VENV_DIR}/bin/python" -m scripts.doctor --production --skip-runtime-checks --env-path "${ENV_FILE}" --app-dir "${REPO_ROOT}"
 
 cat <<EOF
 Bootstrap complete.

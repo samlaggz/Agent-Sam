@@ -59,6 +59,11 @@ def run() -> None:
     parser = argparse.ArgumentParser(description="Run Agent_Sam diagnostics.")
     parser.add_argument("--env-path", type=Path, default=ENV_PATH)
     parser.add_argument("--production", action="store_true", help="Run Linux production deployment checks.")
+    parser.add_argument(
+        "--skip-runtime-checks",
+        action="store_true",
+        help="Skip service state and API health checks when validating a bootstrap-phase production install.",
+    )
     parser.add_argument("--fix", action="store_true", help="Apply safe automatic fixes before re-running checks.")
     parser.add_argument("--non-interactive", action="store_true", help="Reserved for automation compatibility.")
     parser.add_argument("--app-dir", type=Path, default=PRODUCTION_APP_DIR)
@@ -69,6 +74,7 @@ def run() -> None:
         run_doctor(
             arguments.env_path,
             production=arguments.production,
+            skip_runtime_checks=arguments.skip_runtime_checks,
             fix=arguments.fix,
             non_interactive=arguments.non_interactive,
             app_dir=arguments.app_dir,
@@ -82,6 +88,7 @@ async def run_doctor(
     env_path: Path = ENV_PATH,
     *,
     production: bool = False,
+    skip_runtime_checks: bool = False,
     fix: bool = False,
     non_interactive: bool = False,
     app_dir: Path = PRODUCTION_APP_DIR,
@@ -116,9 +123,10 @@ async def run_doctor(
     if production:
         checks.extend(_check_systemctl_available())
         checks.extend(_check_systemd_units(systemd_dir))
-        checks.extend(_check_systemd_service_states())
         checks.extend(_check_nginx_config())
-        checks.extend(_check_api_health())
+        if not skip_runtime_checks:
+            checks.extend(_check_systemd_service_states())
+            checks.extend(_check_api_health())
     else:
         checks.extend(_check_docker_available())
     checks.extend(_check_runtime_imports())
@@ -472,8 +480,7 @@ def _check_skills_and_rules() -> list[DoctorCheck]:
 def _check_specialist_assets() -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     try:
-        validate_agent_profiles()
-        profiles = list_agents()
+        profiles = validate_agent_profiles(list_agents())
     except Exception as exc:
         checks.append(DoctorCheck("FAIL", f"Agent profiles failed to load: {redact_sensitive_text(str(exc))}"))
     else:

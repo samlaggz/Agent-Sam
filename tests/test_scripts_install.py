@@ -137,6 +137,60 @@ def test_run_install_root_production_restores_env_permissions_for_app_user(tmp_p
     assert ["chmod", "600", env_path.as_posix()] in commands
 
 
+def test_run_install_starts_services_before_running_production_doctor(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".env.example").write_text(
+        "APP_ENV=production\n"
+        "DATABASE_URL=postgresql+psycopg://agent_sam_user:CHANGE_ME@127.0.0.1:5432/agent_sam\n"
+        "REDIS_URL=redis://127.0.0.1:6379/0\n"
+        "QDRANT_URL=http://127.0.0.1:6333\n"
+        "ENABLED_GATEWAYS=cli\n"
+        "LITELLM_MODEL=openai/gpt-4o-mini\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(install_module, "detect_os_name", lambda: "Linux")
+    monkeypatch.setattr(install_module, "python_version_text", lambda: "3.11.9")
+    monkeypatch.setattr(install_module, "_prepare_dependency_services", _skip_dependency_bootstrap)
+    monkeypatch.setattr(install_module, "_is_root_user", lambda: True)
+    monkeypatch.setattr(install_module, "_check_api_health", lambda output: True)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://agent_sam_user:real@127.0.0.1:5432/agent_sam")
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    monkeypatch.setenv("QDRANT_URL", "http://127.0.0.1:6333")
+    monkeypatch.setenv("ENABLED_GATEWAYS", "cli")
+    monkeypatch.setenv("AGENT_SAM_LLM_PROVIDER", "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+
+    exit_code = install_module.run_install(
+        install_module.InstallOptions(
+            target=target,
+            dry_run=False,
+            non_interactive=True,
+            skip_nginx=True,
+            skip_start=False,
+            local=False,
+            production=True,
+        ),
+        repo_root=repo_root,
+        output=lambda message: None,
+        command_runner=lambda command, **kwargs: commands.append(list(command)) or subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+    )
+
+    enable_index = commands.index(["systemctl", "enable", "agent-api", "agent-worker", "agent-telegram"])
+    doctor_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command and "python3 -m scripts.doctor --production" in command[-1]
+    )
+
+    assert exit_code == 0
+    assert enable_index < doctor_index
+
+
 def test_run_install_interactive_writes_env_without_printing_secret(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True)

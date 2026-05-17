@@ -1,3 +1,6 @@
+import asyncio
+from pathlib import Path
+
 from scripts import doctor as doctor_module
 
 
@@ -75,3 +78,77 @@ def test_apply_safe_fixes_creates_env_and_app_dir(tmp_path) -> None:
     assert app_dir.exists()
     assert ("FIXED", f"Created .env at {env_path}") in rendered
     assert ("FIXED", f"Created app directory {app_dir}") in rendered
+
+
+def test_check_specialist_assets_validates_loaded_profiles(tmp_path, monkeypatch) -> None:
+    generated_config_root = tmp_path / "configs"
+    generated_prompts_root = tmp_path / "prompts"
+    generated_config_root.mkdir()
+    generated_prompts_root.mkdir()
+    profiles = ("profile-a", "profile-b")
+    seen: dict[str, tuple[str, ...]] = {}
+
+    monkeypatch.setattr(doctor_module, "GENERATED_CONFIG_ROOT", generated_config_root)
+    monkeypatch.setattr(doctor_module, "GENERATED_PROMPTS_ROOT", generated_prompts_root)
+    monkeypatch.setattr(doctor_module, "list_agents", lambda: profiles)
+
+    def fake_validate_agent_profiles(incoming_profiles):
+        seen["profiles"] = tuple(incoming_profiles)
+        return tuple(incoming_profiles)
+
+    monkeypatch.setattr(doctor_module, "validate_agent_profiles", fake_validate_agent_profiles)
+
+    checks = doctor_module._check_specialist_assets()
+    rendered = [(check.status, check.message) for check in checks]
+
+    assert seen["profiles"] == profiles
+    assert ("OK", "Agent profiles loaded (2 profiles)") in rendered
+    assert ("OK", "Generated agent directories exist") in rendered
+
+
+def test_run_doctor_skip_runtime_checks_avoids_service_state_and_health_checks(tmp_path, monkeypatch) -> None:
+    outputs: list[str] = []
+
+    monkeypatch.setattr(doctor_module, "_load_raw_env", lambda env_path: {"ENABLED_GATEWAYS": "cli"})
+    monkeypatch.setattr(doctor_module, "_check_python_version", lambda: [])
+    monkeypatch.setattr(doctor_module, "_check_importable_install", lambda: [])
+    monkeypatch.setattr(doctor_module, "_check_env_file", lambda env_path, production=False: [])
+    monkeypatch.setattr(doctor_module, "_check_env_duplicates", lambda env_path: [])
+    monkeypatch.setattr(doctor_module, "_check_required_env_values", lambda raw_env, production=False: [])
+    monkeypatch.setattr(doctor_module, "_check_llm_config", lambda raw_env, production=False: [])
+    monkeypatch.setattr(doctor_module, "_check_specialist_assets", lambda: [])
+    monkeypatch.setattr(doctor_module, "_check_production_runtime_account", lambda: [])
+    monkeypatch.setattr(doctor_module, "_check_app_directory", lambda app_dir: [])
+    monkeypatch.setattr(doctor_module, "_parse_enabled_gateways", lambda raw_value: {"cli"})
+    monkeypatch.setattr(doctor_module, "_check_systemctl_available", lambda: [])
+    monkeypatch.setattr(doctor_module, "_check_systemd_units", lambda systemd_dir: [])
+    monkeypatch.setattr(doctor_module, "_check_nginx_config", lambda: [])
+    monkeypatch.setattr(doctor_module, "_check_runtime_imports", lambda: [])
+    monkeypatch.setattr(doctor_module, "_check_skills_and_rules", lambda: [])
+    monkeypatch.setattr(doctor_module, "Settings", lambda _env_file: object())
+
+    async def fake_check_database_stack(settings, *, production=False):
+        return []
+
+    monkeypatch.setattr(doctor_module, "_check_database_stack", fake_check_database_stack)
+    monkeypatch.setattr(
+        doctor_module,
+        "_check_systemd_service_states",
+        lambda: (_ for _ in ()).throw(AssertionError("service state checks should be skipped")),
+    )
+    monkeypatch.setattr(
+        doctor_module,
+        "_check_api_health",
+        lambda: (_ for _ in ()).throw(AssertionError("API health checks should be skipped")),
+    )
+
+    exit_code = asyncio.run(
+        doctor_module.run_doctor(
+            tmp_path / ".env",
+            production=True,
+            skip_runtime_checks=True,
+            output=outputs.append,
+        )
+    )
+
+    assert exit_code == 0

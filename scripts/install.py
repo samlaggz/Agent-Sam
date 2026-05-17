@@ -350,18 +350,6 @@ def _run_production_install(
     else:
         output("Skipping nginx configuration.")
 
-    printer.step("Running production doctor")
-    doctor_command = _command_as_user(
-        APP_USER,
-        (
-            f"cd {shlex.quote(str(options.target))} && "
-            f"python3 -m scripts.doctor --production --env-path {shlex.quote(rendered_env_path)} --app-dir {shlex.quote(rendered_target)}"
-        ),
-        is_root=is_root,
-    )
-    if _run_with_output(doctor_command, command_runner=command_runner, output=output, dry_run=options.dry_run).returncode != 0:
-        return 1
-
     printer.step("Enabling and starting services")
     if start_services_choice and not options.skip_start:
         for command in (
@@ -373,6 +361,18 @@ def _run_production_install(
                 return 1
     else:
         output("Skipping service enable/start.")
+
+    printer.step("Running production doctor")
+    doctor_command = _command_as_user(
+        APP_USER,
+        (
+            f"cd {shlex.quote(str(options.target))} && "
+            f"python3 -m scripts.doctor --production --env-path {shlex.quote(rendered_env_path)} --app-dir {shlex.quote(rendered_target)}"
+        ),
+        is_root=is_root,
+    )
+    if _run_with_output(doctor_command, command_runner=command_runner, output=output, dry_run=options.dry_run).returncode != 0:
+        return 1
 
     printer.step("Checking API health")
     if start_services_choice and not options.skip_start and not options.dry_run:

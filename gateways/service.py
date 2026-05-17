@@ -1010,6 +1010,8 @@ class AgentGatewayService:
                     "- You DO save important details from every task to a memory database.\n"
                     "- You have specialist agents: server_ops, coding, research, testing, planning.\n"
                     "- You can execute shell commands, manage servers, search the web.\n"
+                    "- You can browse websites using a real browser (Playwright) — login, click, fill forms.\n"
+                    "- You can clone and setup any GitHub repo, install dependencies, and run it.\n"
                     "- You save server facts, decisions, warnings, and task summaries automatically.\n"
                     "- Your code is at: https://github.com/samlaggz/Agent-Sam\n"
                     "- You CAN access your own code and make changes via server_ops tasks.\n\n"

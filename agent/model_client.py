@@ -293,11 +293,22 @@ class HermesModelClient:
     def get_tool_definitions(self) -> list[dict[str, Any]]:
         shell_enabled = self._has_shell_access()
         web_enabled = self._settings.enable_web_research and self._has_web_access()
+        browser_enabled = self._is_browser_available()
         return build_tool_definitions(
             shell_enabled=shell_enabled,
             web_enabled=web_enabled,
+            browser_enabled=browser_enabled,
             memory_enabled=True,
         )
+
+    def _is_browser_available(self) -> bool:
+        """Check if Playwright browser tools are available."""
+        try:
+            from tools.browser_tool import check_browser_available
+            available, _ = check_browser_available()
+            return available
+        except Exception:
+            return False
 
     def _resolve_model(self) -> str:
         if self._model_override:
@@ -344,11 +355,13 @@ class HermesModelClient:
             "and fix the issue. Do NOT repeat the same failing command.\n"
             "15. NEVER call task_complete if you only asked a question or requested clarification. "
             "If you need more info, call task_failed with a clear question.\n"
-            "16. You can ONLY run shell commands and web searches. You CANNOT interact with "
-            "web browser UIs, fill login forms, click buttons, or use Playwright/Selenium. "
-            "If the user asks you to log into a website, explain this limitation honestly.\n"
+            "16. If browser tools are available (browser_navigate, browser_click, browser_type), "
+            "use them to interact with websites — log in, fill forms, click buttons, read pages. "
+            "If browser tools are NOT in your tool list, you cannot interact with web UIs.\n"
             "17. READ the conversation context in the task description carefully. It contains "
-            "the recent chat history so you understand what the user has been discussing."
+            "the recent chat history so you understand what the user has been discussing.\n"
+            "18. To clone and use a GitHub repo: git clone <url>, cd into it, read README, "
+            "install dependencies (pip install, npm install, etc.), then run it."
         )
 
     def _load_profile_prompt(self) -> str:

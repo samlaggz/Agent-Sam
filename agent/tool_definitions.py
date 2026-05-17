@@ -165,10 +165,154 @@ def task_failed_tool() -> dict[str, Any]:
     }
 
 
+def browser_navigate_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": (
+                "Navigate to a URL in the browser. Opens the page and returns a snapshot "
+                "of the accessibility tree with interactive element refs like @e1, @e5. "
+                "Use this for pages that need interaction (login forms, clicking buttons, "
+                "dynamic content). For simple page reading, prefer web_search or shell curl."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to navigate to (e.g., 'https://example.com').",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    }
+
+
+def browser_snapshot_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser_snapshot",
+            "description": (
+                "Get a text snapshot of the current page's accessibility tree. "
+                "Shows interactive elements with ref IDs (like @e1, @e2) for clicking/typing. "
+                "Call after browser_navigate or after any interaction that changes the page."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "full": {
+                        "type": "boolean",
+                        "description": "If true, returns complete page content. Default: compact interactive view.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    }
+
+
+def browser_click_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": (
+                "Click on an element by its ref ID from the snapshot (e.g., '@e5'). "
+                "The ref IDs are shown in square brackets in the snapshot output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "The element reference (e.g., '@e5', '@e12').",
+                    },
+                },
+                "required": ["ref"],
+            },
+        },
+    }
+
+
+def browser_type_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": (
+                "Type text into an input field by its ref ID. Clears the field first. "
+                "Use browser_snapshot to find the right ref ID for the input field."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "The input element reference (e.g., '@e3').",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "The text to type into the field.",
+                    },
+                },
+                "required": ["ref", "text"],
+            },
+        },
+    }
+
+
+def browser_press_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser_press",
+            "description": (
+                "Press a keyboard key. Useful for submitting forms (Enter), "
+                "navigating (Tab), or dismissing dialogs (Escape)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Key to press: 'Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp'.",
+                    },
+                },
+                "required": ["key"],
+            },
+        },
+    }
+
+
+def browser_scroll_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "browser_scroll",
+            "description": "Scroll the page up or down to reveal more content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down"],
+                        "description": "Direction to scroll.",
+                    },
+                },
+                "required": ["direction"],
+            },
+        },
+    }
+
+
 def build_tool_definitions(
     *,
     shell_enabled: bool = True,
     web_enabled: bool = False,
+    browser_enabled: bool = False,
     memory_enabled: bool = True,
 ) -> list[dict[str, Any]]:
     """Build the tool list based on agent capabilities."""
@@ -179,6 +323,13 @@ def build_tool_definitions(
     if web_enabled:
         tools.append(web_search_tool())
         tools.append(web_open_tool())
+    if browser_enabled:
+        tools.append(browser_navigate_tool())
+        tools.append(browser_snapshot_tool())
+        tools.append(browser_click_tool())
+        tools.append(browser_type_tool())
+        tools.append(browser_press_tool())
+        tools.append(browser_scroll_tool())
     if memory_enabled:
         tools.append(save_memory_tool())
 

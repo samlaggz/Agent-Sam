@@ -78,6 +78,8 @@ class AgentNodeHandlers:
             allowed_roots=allowed_tool_roots,
             web_research_provider=web_research_provider,
         )
+        # Lazy-init browser tool
+        self._browser_tool = None
         self._shell_tool = cast(ShellCommandTool, self._runtime_tool_registry["shell_command"])
         self._web_tool = cast(WebResearchTool | None, self._runtime_tool_registry.get("web_search"))
         roots = list(allowed_tool_roots or [Path.cwd()])
@@ -672,6 +674,24 @@ class AgentNodeHandlers:
             if tc.name == "save_memory":
                 return await self._exec_save_memory(task_snapshot, tc)
 
+            if tc.name == "browser_navigate":
+                return await self._exec_browser_navigate(task_snapshot, tc)
+
+            if tc.name == "browser_snapshot":
+                return await self._exec_browser_snapshot(task_snapshot, tc)
+
+            if tc.name == "browser_click":
+                return await self._exec_browser_click(task_snapshot, tc)
+
+            if tc.name == "browser_type":
+                return await self._exec_browser_type(task_snapshot, tc)
+
+            if tc.name == "browser_press":
+                return await self._exec_browser_press(task_snapshot, tc)
+
+            if tc.name == "browser_scroll":
+                return await self._exec_browser_scroll(task_snapshot, tc)
+
             if tc.name == "task_complete":
                 summary = tc.arguments.get("summary", "Task completed.")
                 return summary, "completed"
@@ -807,6 +827,82 @@ class AgentNodeHandlers:
             return f"Saved to memory: {content[:100]}", "completed"
         except Exception as exc:
             return f"Failed to save memory: {exc}", "failed"
+
+    # ── Browser tool execution ────────────────────────────────────────
+
+    async def _get_browser(self):
+        """Lazy-init the browser tool."""
+        if self._browser_tool is None:
+            try:
+                from tools.browser_tool import BrowserTool
+                self._browser_tool = BrowserTool(self._session_factory)
+            except Exception as exc:
+                logger.warning("Browser tool init failed: %s", exc)
+                return None
+        return self._browser_tool
+
+    async def _exec_browser_navigate(
+        self, task_snapshot: TaskSnapshot, tc: ToolCallRequest
+    ) -> tuple[str, str]:
+        browser = await self._get_browser()
+        if browser is None:
+            return "Browser not available. Install: pip install playwright && python -m playwright install chromium", "failed"
+        url = tc.arguments.get("url", "").strip()
+        if not url:
+            return "Error: no URL provided.", "failed"
+        result = await browser.navigate(task_id=task_snapshot["id"], url=url)
+        return result.to_json(), "completed" if result.success else "failed"
+
+    async def _exec_browser_snapshot(
+        self, task_snapshot: TaskSnapshot, tc: ToolCallRequest
+    ) -> tuple[str, str]:
+        browser = await self._get_browser()
+        if browser is None:
+            return "Browser not available.", "failed"
+        full = tc.arguments.get("full", False)
+        result = await browser.snapshot(task_id=task_snapshot["id"], full=full)
+        return result.to_json(), "completed" if result.success else "failed"
+
+    async def _exec_browser_click(
+        self, task_snapshot: TaskSnapshot, tc: ToolCallRequest
+    ) -> tuple[str, str]:
+        browser = await self._get_browser()
+        if browser is None:
+            return "Browser not available.", "failed"
+        ref = tc.arguments.get("ref", "")
+        result = await browser.click(task_id=task_snapshot["id"], ref=ref)
+        return result.to_json(), "completed" if result.success else "failed"
+
+    async def _exec_browser_type(
+        self, task_snapshot: TaskSnapshot, tc: ToolCallRequest
+    ) -> tuple[str, str]:
+        browser = await self._get_browser()
+        if browser is None:
+            return "Browser not available.", "failed"
+        ref = tc.arguments.get("ref", "")
+        text = tc.arguments.get("text", "")
+        result = await browser.type_text(task_id=task_snapshot["id"], ref=ref, text=text)
+        return result.to_json(), "completed" if result.success else "failed"
+
+    async def _exec_browser_press(
+        self, task_snapshot: TaskSnapshot, tc: ToolCallRequest
+    ) -> tuple[str, str]:
+        browser = await self._get_browser()
+        if browser is None:
+            return "Browser not available.", "failed"
+        key = tc.arguments.get("key", "Enter")
+        result = await browser.press_key(task_id=task_snapshot["id"], key=key)
+        return result.to_json(), "completed" if result.success else "failed"
+
+    async def _exec_browser_scroll(
+        self, task_snapshot: TaskSnapshot, tc: ToolCallRequest
+    ) -> tuple[str, str]:
+        browser = await self._get_browser()
+        if browser is None:
+            return "Browser not available.", "failed"
+        direction = tc.arguments.get("direction", "down")
+        result = await browser.scroll(task_id=task_snapshot["id"], direction=direction)
+        return result.to_json(), "completed" if result.success else "failed"
 
     # ── Helpers ────────────────────────────────────────────────────────
 

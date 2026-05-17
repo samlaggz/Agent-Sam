@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import argparse
 import getpass
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from scripts.common import PROJECT_ROOT, detect_os_name, format_command, python_version_text, run_subprocess
@@ -27,6 +31,9 @@ APP_USER = "agentos"
 INSTALL_REPO_SLUG = "samlaggz/Agent-Sam"
 INSTALL_REPO_REF = "main"
 INSTALL_TOKEN_ENV_VAR = "AGENT_SAM_GITHUB_TOKEN"
+BUNDLED_LOCAL_DATABASE_URL = "postgresql+psycopg://agent_sam:agent_sam@127.0.0.1:5432/agent_sam"
+BUNDLED_LOCAL_REDIS_URL = "redis://127.0.0.1:6379/0"
+BUNDLED_LOCAL_QDRANT_URL = "http://127.0.0.1:6333"
 AVAILABLE_GATEWAYS = ("telegram", "cli", "webhook")
 LLM_PROVIDER_OPTIONS = {
     "1": ("OpenRouter", "openrouter/openai/gpt-4.1-mini", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"),
@@ -188,7 +195,7 @@ def _run_production_install(
     output: OutputFunc,
     command_runner: CommandRunner,
 ) -> int:
-    printer = StepPrinter(total_steps=10, output=output)
+    printer = StepPrinter(total_steps=11, output=output)
     env_path = options.target / ".env"
     example_path = repo_root / ".env.example"
     is_root = _is_root_user()
@@ -273,6 +280,22 @@ def _run_production_install(
         return 1
     if not options.dry_run:
         ensure_env_file(env_path, example_path=example_path)
+        update_env_file(env_path, env_updates, example_path=example_path, preserve_existing_values=False)
+
+    printer.step("Preparing dependency services")
+    prepared_env_updates = _prepare_dependency_services(
+        env_updates,
+        target=options.target,
+        options=options,
+        prompt=prompt,
+        output=output,
+        command_runner=command_runner,
+        is_root=is_root,
+    )
+    if prepared_env_updates is None:
+        return 1
+    env_updates = prepared_env_updates
+    if not options.dry_run:
         update_env_file(env_path, env_updates, example_path=example_path, preserve_existing_values=False)
 
     printer.step("Bootstrapping the application as agentos")
@@ -767,6 +790,152 @@ def _resolve_server_name(
     if non_interactive:
         return env_override or default_server_name
     return prompt(f"nginx server_name [{default_server_name}]: ").strip() or default_server_name
+
+
+def _prepare_dependency_services(
+    env_values: dict[str, str],
+    *,
+    target: Path,
+    options: InstallOptions,
+    prompt: PromptFunc,
+    output: OutputFunc,
+    command_runner: CommandRunner,
+    is_root: bool,
+) -> dict[str, str] | None:
+    if options.dry_run:
+        output("Dry run: would verify local dependency services and start bundled docker compose services if they are missing.")
+        return env_values
+
+    if not _uses_loopback_dependency_endpoints(env_values):
+        output("Dependency endpoints are not loopback-only; skipping bundled local dependency bootstrap.")
+        return env_values
+
+    if _local_dependency_services_reachable(env_values):
+        output("Local dependency services are reachable.")
+        return env_values
+
+    output("Local Postgres, Redis, or Qdrant services are not reachable on the configured loopback URLs.")
+    if not _docker_available(command_runner=command_runner, is_root=is_root):
+        output(
+            "Install Docker and run "
+            f"docker compose -f {target.as_posix()}/docker-compose.yml up -d postgres redis qdrant, "
+            "or point DATABASE_URL, REDIS_URL, and QDRANT_URL at reachable services."
+        )
+        return None
+
+    use_bundled_stack = True
+    if not options.non_interactive:
+        use_bundled_stack = _prompt_yes_no(
+            prompt,
+            "Start bundled postgres, redis, and qdrant Docker services and use their local default URLs?",
+            default=True,
+        )
+    if not use_bundled_stack:
+        output(
+            f"Run docker compose -f {target.as_posix()}/docker-compose.yml up -d postgres redis qdrant, "
+            "or point DATABASE_URL, REDIS_URL, and QDRANT_URL at reachable services before retrying."
+        )
+        return None
+
+    bundled_env_values = {
+        **env_values,
+        "DATABASE_URL": BUNDLED_LOCAL_DATABASE_URL,
+        "REDIS_URL": BUNDLED_LOCAL_REDIS_URL,
+        "QDRANT_URL": BUNDLED_LOCAL_QDRANT_URL,
+    }
+    output("Using bundled local dependency stack defaults for DATABASE_URL, REDIS_URL, and QDRANT_URL.")
+
+    compose_command = _privileged_command(
+        [
+            "docker",
+            "compose",
+            "-f",
+            f"{target.as_posix()}/docker-compose.yml",
+            "up",
+            "-d",
+            "postgres",
+            "redis",
+            "qdrant",
+        ],
+        is_root=is_root,
+    )
+    if _run_with_output(compose_command, command_runner=command_runner, output=output, dry_run=False).returncode != 0:
+        return None
+
+    if not _wait_for_local_dependency_services(bundled_env_values, output=output):
+        output("Bundled local dependency services did not become reachable in time.")
+        return None
+
+    output("Bundled local dependency services are reachable.")
+    return bundled_env_values
+
+
+def _uses_loopback_dependency_endpoints(env_values: dict[str, str]) -> bool:
+    endpoints = (
+        _extract_host_port(env_values.get("DATABASE_URL", ""), default_port=5432),
+        _extract_host_port(env_values.get("REDIS_URL", ""), default_port=6379),
+        _extract_host_port(env_values.get("QDRANT_URL", ""), default_port=6333),
+    )
+    return all(endpoint is not None and _is_loopback_host(endpoint[0]) for endpoint in endpoints)
+
+
+def _local_dependency_services_reachable(env_values: dict[str, str]) -> bool:
+    database_endpoint = _extract_host_port(env_values.get("DATABASE_URL", ""), default_port=5432)
+    redis_endpoint = _extract_host_port(env_values.get("REDIS_URL", ""), default_port=6379)
+    qdrant_endpoint = _extract_host_port(env_values.get("QDRANT_URL", ""), default_port=6333)
+
+    for endpoint in (database_endpoint, redis_endpoint, qdrant_endpoint):
+        if endpoint is None:
+            return False
+        if not _tcp_endpoint_reachable(*endpoint):
+            return False
+    return True
+
+
+def _wait_for_local_dependency_services(
+    env_values: dict[str, str],
+    *,
+    output: OutputFunc,
+    timeout_seconds: float = 60.0,
+) -> bool:
+    output("Waiting for bundled local dependency services to become reachable...")
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if _local_dependency_services_reachable(env_values):
+            return True
+        time.sleep(2.0)
+    return False
+
+
+def _docker_available(*, command_runner: CommandRunner, is_root: bool) -> bool:
+    try:
+        result = command_runner(_privileged_command(["docker", "version"], is_root=is_root), capture_output=True)
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
+
+
+def _extract_host_port(raw_value: str, *, default_port: int) -> tuple[str, int] | None:
+    if not raw_value:
+        return None
+    parsed = urlparse(raw_value)
+    host = parsed.hostname
+    if not host:
+        return None
+    return host, parsed.port or default_port
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in {"127.0.0.1", "localhost", "::1"}
+
+
+def _tcp_endpoint_reachable(host: str, port: int, *, timeout_seconds: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds):
+            return True
+    except OSError:
+        return False
 
 
 def _run_with_output(

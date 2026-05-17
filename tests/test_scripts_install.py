@@ -6,6 +6,10 @@ from pathlib import Path
 from scripts import install as install_module
 
 
+def _skip_dependency_bootstrap(env_values, **kwargs):
+    return env_values
+
+
 def test_run_install_production_dry_run_prints_actions_without_touching_target(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -59,6 +63,7 @@ def test_run_install_non_interactive_requires_llm_secret(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(install_module, "detect_os_name", lambda: "Linux")
     monkeypatch.setattr(install_module, "python_version_text", lambda: "3.11.9")
+    monkeypatch.setattr(install_module, "_prepare_dependency_services", _skip_dependency_bootstrap)
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://agent_sam_user:real@127.0.0.1:5432/agent_sam")
 
     exit_code = install_module.run_install(
@@ -114,6 +119,7 @@ def test_run_install_interactive_writes_env_without_printing_secret(tmp_path: Pa
 
     monkeypatch.setattr(install_module, "detect_os_name", lambda: "Linux")
     monkeypatch.setattr(install_module, "python_version_text", lambda: "3.11.9")
+    monkeypatch.setattr(install_module, "_prepare_dependency_services", _skip_dependency_bootstrap)
 
     exit_code = install_module.run_install(
         install_module.InstallOptions(
@@ -174,6 +180,7 @@ def test_run_install_interactive_reprompts_when_database_url_keeps_placeholder(t
 
     monkeypatch.setattr(install_module, "detect_os_name", lambda: "Linux")
     monkeypatch.setattr(install_module, "python_version_text", lambda: "3.11.9")
+    monkeypatch.setattr(install_module, "_prepare_dependency_services", _skip_dependency_bootstrap)
 
     exit_code = install_module.run_install(
         install_module.InstallOptions(
@@ -197,6 +204,82 @@ def test_run_install_interactive_reprompts_when_database_url_keeps_placeholder(t
     assert exit_code == 0
     assert "DATABASE_URL=postgresql+psycopg://agent_sam_user:real@127.0.0.1:5432/agent_sam" in env_text
     assert any("DATABASE_URL must be set to a real value and cannot keep the placeholder." == message for message in outputs)
+
+
+def test_prepare_dependency_services_starts_bundled_local_stack_and_rewrites_env(tmp_path: Path, monkeypatch) -> None:
+    outputs: list[str] = []
+    commands: list[list[str]] = []
+    target = tmp_path / "target"
+    target.mkdir()
+    env_values = {
+        "DATABASE_URL": "postgresql+psycopg://agent_sam_user:custom@127.0.0.1:5432/agent_sam",
+        "REDIS_URL": "redis://127.0.0.1:6379/0",
+        "QDRANT_URL": "http://127.0.0.1:6333",
+    }
+
+    monkeypatch.setattr(install_module, "_local_dependency_services_reachable", lambda values: False)
+    monkeypatch.setattr(install_module, "_wait_for_local_dependency_services", lambda values, output, timeout_seconds=60.0: True)
+    monkeypatch.setattr(install_module, "_docker_available", lambda **kwargs: True)
+
+    updated_env_values = install_module._prepare_dependency_services(
+        env_values,
+        target=target,
+        options=install_module.InstallOptions(
+            target=target,
+            dry_run=False,
+            non_interactive=True,
+            skip_nginx=True,
+            skip_start=True,
+            local=False,
+            production=True,
+        ),
+        prompt=lambda text: "",
+        output=outputs.append,
+        command_runner=lambda command, **kwargs: commands.append(list(command)) or subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+        is_root=True,
+    )
+
+    assert updated_env_values is not None
+    assert updated_env_values["DATABASE_URL"] == install_module.BUNDLED_LOCAL_DATABASE_URL
+    assert updated_env_values["REDIS_URL"] == install_module.BUNDLED_LOCAL_REDIS_URL
+    assert updated_env_values["QDRANT_URL"] == install_module.BUNDLED_LOCAL_QDRANT_URL
+    assert any(command[:6] == ["docker", "compose", "-f", f"{target.as_posix()}/docker-compose.yml", "up", "-d"] for command in commands)
+    assert any("Using bundled local dependency stack defaults for DATABASE_URL, REDIS_URL, and QDRANT_URL." == message for message in outputs)
+
+
+def test_prepare_dependency_services_fails_cleanly_when_docker_is_unavailable(tmp_path: Path, monkeypatch) -> None:
+    outputs: list[str] = []
+    target = tmp_path / "target"
+    target.mkdir()
+    env_values = {
+        "DATABASE_URL": "postgresql+psycopg://agent_sam_user:custom@127.0.0.1:5432/agent_sam",
+        "REDIS_URL": "redis://127.0.0.1:6379/0",
+        "QDRANT_URL": "http://127.0.0.1:6333",
+    }
+
+    monkeypatch.setattr(install_module, "_local_dependency_services_reachable", lambda values: False)
+    monkeypatch.setattr(install_module, "_docker_available", lambda **kwargs: False)
+
+    updated_env_values = install_module._prepare_dependency_services(
+        env_values,
+        target=target,
+        options=install_module.InstallOptions(
+            target=target,
+            dry_run=False,
+            non_interactive=True,
+            skip_nginx=True,
+            skip_start=True,
+            local=False,
+            production=True,
+        ),
+        prompt=lambda text: "",
+        output=outputs.append,
+        command_runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+        is_root=True,
+    )
+
+    assert updated_env_values is None
+    assert any("Local Postgres, Redis, or Qdrant services are not reachable on the configured loopback URLs." == message for message in outputs)
 
 
 def test_build_one_line_install_command_renders_remote_bootstrap_command() -> None:

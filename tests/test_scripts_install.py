@@ -206,6 +206,64 @@ def test_run_install_interactive_reprompts_when_database_url_keeps_placeholder(t
     assert any("DATABASE_URL must be set to a real value and cannot keep the placeholder." == message for message in outputs)
 
 
+def test_run_install_interactive_normalizes_wrapped_dependency_urls(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    (repo_root / ".env.example").write_text(
+        "APP_ENV=production\n"
+        "DATABASE_URL=postgresql+psycopg://agent_sam_user:CHANGE_ME@127.0.0.1:5432/agent_sam\n"
+        "REDIS_URL=redis://127.0.0.1:6379/0\n"
+        "QDRANT_URL=http://127.0.0.1:6333\n"
+        "ENABLED_GATEWAYS=cli\n"
+        "LITELLM_MODEL=openai/gpt-4o-mini\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    outputs: list[str] = []
+    prompt_values = iter(
+        [
+            "",
+            "",
+            "",
+            "[postgresql+psycopg://agent_sam_user:real@127.0.0.1:5432/agent_sam]",
+            '"redis://127.0.0.1:6379/0"',
+            "'[http://127.0.0.1:6333]'",
+            "cli",
+            "2",
+        ]
+        + [""] * 40
+    )
+
+    monkeypatch.setattr(install_module, "detect_os_name", lambda: "Linux")
+    monkeypatch.setattr(install_module, "python_version_text", lambda: "3.11.9")
+    monkeypatch.setattr(install_module, "_prepare_dependency_services", _skip_dependency_bootstrap)
+
+    exit_code = install_module.run_install(
+        install_module.InstallOptions(
+            target=target,
+            dry_run=False,
+            non_interactive=False,
+            skip_nginx=True,
+            skip_start=True,
+            local=False,
+            production=True,
+        ),
+        repo_root=repo_root,
+        prompt=lambda text: next(prompt_values),
+        secret_prompt=lambda text: "openai-secret",
+        output=outputs.append,
+        command_runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+    )
+
+    env_text = (target / ".env").read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "DATABASE_URL=postgresql+psycopg://agent_sam_user:real@127.0.0.1:5432/agent_sam" in env_text
+    assert "REDIS_URL=redis://127.0.0.1:6379/0" in env_text
+    assert "QDRANT_URL=http://127.0.0.1:6333" in env_text
+
+
 def test_prepare_dependency_services_starts_bundled_local_stack_and_rewrites_env(tmp_path: Path, monkeypatch) -> None:
     outputs: list[str] = []
     commands: list[list[str]] = []
@@ -245,6 +303,45 @@ def test_prepare_dependency_services_starts_bundled_local_stack_and_rewrites_env
     assert updated_env_values["QDRANT_URL"] == install_module.BUNDLED_LOCAL_QDRANT_URL
     assert any(command[:6] == ["docker", "compose", "-f", f"{target.as_posix()}/docker-compose.yml", "up", "-d"] for command in commands)
     assert any("Using bundled local dependency stack defaults for DATABASE_URL, REDIS_URL, and QDRANT_URL." == message for message in outputs)
+
+
+def test_prepare_dependency_services_accepts_wrapped_loopback_database_url(tmp_path: Path, monkeypatch) -> None:
+    outputs: list[str] = []
+    commands: list[list[str]] = []
+    target = tmp_path / "target"
+    target.mkdir()
+    env_values = {
+        "DATABASE_URL": "[postgresql+psycopg://agent_sam_user:custom@127.0.0.1:5432/agent_sam]",
+        "REDIS_URL": "redis://127.0.0.1:6379/0",
+        "QDRANT_URL": "http://127.0.0.1:6333",
+    }
+
+    monkeypatch.setattr(install_module, "_local_dependency_services_reachable", lambda values: False)
+    monkeypatch.setattr(install_module, "_wait_for_local_dependency_services", lambda values, output, timeout_seconds=60.0: True)
+    monkeypatch.setattr(install_module, "_docker_available", lambda **kwargs: True)
+
+    updated_env_values = install_module._prepare_dependency_services(
+        env_values,
+        target=target,
+        options=install_module.InstallOptions(
+            target=target,
+            dry_run=False,
+            non_interactive=True,
+            skip_nginx=True,
+            skip_start=True,
+            local=False,
+            production=True,
+        ),
+        prompt=lambda text: "",
+        output=outputs.append,
+        command_runner=lambda command, **kwargs: commands.append(list(command)) or subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+        is_root=True,
+    )
+
+    assert updated_env_values is not None
+    assert updated_env_values["DATABASE_URL"] == install_module.BUNDLED_LOCAL_DATABASE_URL
+    assert any(command[:6] == ["docker", "compose", "-f", f"{target.as_posix()}/docker-compose.yml", "up", "-d"] for command in commands)
+    assert all("Dependency endpoints are not loopback-only; skipping bundled local dependency bootstrap." != message for message in outputs)
 
 
 def test_prepare_dependency_services_fails_cleanly_when_docker_is_unavailable(tmp_path: Path, monkeypatch) -> None:

@@ -684,21 +684,45 @@ def _resolve_value(
     output: OutputFunc,
 ) -> str | None:
     if dry_run:
-        return current_value or default_value
+        return _normalize_resolved_value(key, current_value or default_value)
 
-    env_override = os.environ.get(key, "").strip()
+    env_override = _normalize_resolved_value(key, os.environ.get(key, ""))
+    normalized_current_value = _normalize_resolved_value(key, current_value)
+    normalized_default_value = _normalize_resolved_value(key, default_value)
     if non_interactive:
-        resolved = env_override or current_value or default_value
+        resolved = env_override or normalized_current_value or normalized_default_value
         if not resolved or "CHANGE_ME" in resolved:
             return None
         return resolved
 
-    prompt_default = current_value or default_value
+    prompt_default = normalized_current_value or normalized_default_value
     while True:
-        value = prompt(f"{key} [{prompt_default}]: ").strip() or prompt_default
+        value = _normalize_resolved_value(key, prompt(f"{key} [{prompt_default}]: ").strip() or prompt_default)
         if value and "CHANGE_ME" not in value:
             return value
         output(f"{key} must be set to a real value and cannot keep the placeholder.")
+
+
+def _normalize_resolved_value(key: str, raw_value: str) -> str:
+    normalized = raw_value.strip()
+    if not normalized:
+        return ""
+    if key.endswith("_URL"):
+        return _strip_wrapping_delimiters(normalized)
+    return normalized
+
+
+def _strip_wrapping_delimiters(raw_value: str) -> str:
+    normalized = raw_value.strip()
+    while len(normalized) >= 2:
+        if normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+            normalized = normalized[1:-1].strip()
+            continue
+        if normalized[0] == "[" and normalized[-1] == "]" and "://" in normalized:
+            normalized = normalized[1:-1].strip()
+            continue
+        break
+    return normalized
 
 
 def _resolve_secret(
@@ -918,7 +942,7 @@ def _docker_available(*, command_runner: CommandRunner, is_root: bool) -> bool:
 def _extract_host_port(raw_value: str, *, default_port: int) -> tuple[str, int] | None:
     if not raw_value:
         return None
-    parsed = urlparse(raw_value)
+    parsed = urlparse(_strip_wrapping_delimiters(raw_value))
     host = parsed.hostname
     if not host:
         return None

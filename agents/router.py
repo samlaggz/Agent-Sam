@@ -42,7 +42,10 @@ class RouterAgent(SpecialistAgent):
             reason = f"User explicitly requested {requested_slug}."
         else:
             matches = tuple(profile for profile in find_agents_for_task(payload, self._profiles) if profile.slug != self.profile.slug)
-            chosen_profile = matches[0] if matches else self._profiles["coding_agent"]
+            if matches:
+                chosen_profile = matches[0]
+            else:
+                chosen_profile = _infer_best_fallback(payload, self._profiles)
             confidence = _estimate_confidence(payload, chosen_profile)
             reason = _build_reason(payload, chosen_profile)
 
@@ -110,6 +113,18 @@ def _build_reason(payload: Mapping[str, Any], profile: AgentProfile) -> str:
     if keyword is not None:
         return f"Matched task intent '{keyword}' to {profile.slug}."
     return f"Selected {profile.slug} as the cheapest suitable specialist for the task content."
+
+
+def _infer_best_fallback(payload: Mapping[str, Any], profiles: Mapping[str, Any]) -> Any:
+    haystack = f"{payload.get('title', '')} {payload.get('description', '')}".lower()
+    server_ops_keywords = (
+        "folder", "file", "directory", "path", "find", "ls", "pwd",
+        "server", "linux", "/var", "/etc", "/opt", "process", "service",
+        "nginx", "apache", "systemd", "shiva", "drive", "site", "/www",
+    )
+    if any(kw in haystack for kw in server_ops_keywords):
+        return profiles.get("server_ops_agent") or profiles["coding_agent"]
+    return profiles.get("coding_agent") or next(iter(profiles.values()))
 
 
 def _cost_level_for_model(model: str) -> str:

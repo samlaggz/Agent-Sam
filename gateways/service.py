@@ -172,12 +172,14 @@ class AgentGatewayService:
         intent = await self._decide_text_intent(incoming.text)
         if inherited_task_text is not None:
             intent = "task"
+
+        # Enrich context-dependent references BEFORE routing regardless of intent
+        enriched_text = await self._enrich_with_recent_path_context(session, incoming, text_for_intent)
+        if enriched_text != text_for_intent:
+            text_for_intent = enriched_text
+            intent = "task"
+
         if intent == "chat":
-            enriched_text = await self._enrich_with_recent_path_context(session, incoming, incoming.text)
-            if enriched_text != incoming.text:
-                task = await self._create_task_from_text(session, incoming, message, task_text=enriched_text)
-                route_preview = self._route_task_preview(task.title, task.description or "")
-                return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
             return await self._handle_chat_message(session, message, incoming)
         task = await self._create_task_from_text(session, incoming, message, task_text=text_for_intent)
         route_preview = self._route_task_preview(task.title, task.description or "")
@@ -1335,14 +1337,19 @@ class AgentGatewayService:
 
     async def _enrich_with_recent_path_context(self, session: AsyncSession, incoming: IncomingGatewayMessage, text: str) -> str:
         normalized_text = self._normalize_text(text)
-        if not (self._is_folder_contents_question(normalized_text) or self._is_pwd_question(normalized_text)):
+        needs_path = (
+            self._is_folder_contents_question(normalized_text)
+            or self._is_pwd_question(normalized_text)
+            or self._has_unclear_path_reference(normalized_text)
+        )
+        if not needs_path:
             return text
 
         result = await session.execute(
             select(Message)
             .where(Message.workspace_id == incoming.workspace_id)
             .order_by(Message.created_at.desc())
-            .limit(40)
+            .limit(60)
         )
         recent_messages = list(result.scalars().all())
 
@@ -1350,8 +1357,23 @@ class AgentGatewayService:
         if path:
             if self._is_pwd_question(normalized_text):
                 return f"Print the full path of {path} using: cd {path} && pwd"
-            return f"List the contents of {path} using: ls -la {path}"
+            if self._is_folder_contents_question(normalized_text):
+                return f"List the contents of {path} using: ls -la {path}"
+            return f"{text} — context: the path being referenced is {path}"
         return text
+
+    def _has_unclear_path_reference(self, normalized_text: str) -> bool:
+        phrases = (
+            "that folder",
+            "this folder",
+            "the folder",
+            "that directory",
+            "this directory",
+            "it should be in",
+            "look in",
+            "check in",
+        )
+        return any(phrase in normalized_text for phrase in phrases)
 
     def _parse_json_object(self, text: str) -> dict[str, Any] | None:
         cleaned = text.strip()

@@ -401,7 +401,7 @@ class AgentNodeHandlers:
 
     async def _execute_planned_step(self, task_snapshot: TaskSnapshot, step: PlanStepState) -> StepExecutionOutcome:
         tool_name = step.get("tool_name")
-        if not tool_name:
+        if not tool_name or tool_name in ("null", "none", "None"):
             return StepExecutionOutcome(
                 status="completed",
                 summary=f"Step {step['position']} completed: {step['description']}",

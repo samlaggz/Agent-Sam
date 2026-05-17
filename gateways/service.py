@@ -47,7 +47,7 @@ _TASK_REQUEST_PREFIX_PATTERN = re.compile(
 )
 _CHAT_GREETING_PATTERN = re.compile(r"^(hi|hello|hey|yo|thanks|thank you)\b")
 _CHAT_QUESTION_PREFIX_PATTERN = re.compile(r"^(what|why|how|who|where|when|which|explain|tell me|show me)\b")
-_AFFIRMATION_PATTERN = re.compile(r"^(yes|yeah|yep|ok|okay|sure|please do|go ahead|do it|do it fast|yes do it fast)\b")
+_AFFIRMATION_PATTERN = re.compile(r"^(yes|yeah|yep|ok|okay|sure|please do|go ahead|do it|do it fast|yes do it fast|yes go|go yes|proceed|yes proceed|go and do it|yes go and do it|just do it)\b")
 _TASK_STARTERS = {
     "add",
     "analyze",
@@ -1314,6 +1314,11 @@ class AgentGatewayService:
             "delete all",
             "remove all tasks",
             "clear all",
+            "delete them",
+            "cancel them",
+            "remove them",
+            "delete those",
+            "cancel those",
         )
         return any(phrase in normalized_text for phrase in phrases)
 

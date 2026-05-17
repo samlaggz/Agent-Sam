@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
 from db.models import User, Workspace
+from agent.progress import TelegramProgressAdapter
 from gateways.base import GatewayConfigurationError, GatewayResponse
 from gateways.registry import build_gateway
 from gateways.runtime_logging import SecretRedactionFilter, TelegramShutdownNoiseFilter, configure_gateway_logging
@@ -271,3 +272,31 @@ async def test_telegram_gateway_callback_query_sends_approve_command() -> None:
     assert service.received_texts == ["/approve approval-123"]
     assert update.callback_query.answered == ["Approved"]
     assert update.callback_query.message.replies
+
+
+@pytest.mark.asyncio
+async def test_telegram_progress_adapter_only_sends_final_or_approval_stages(monkeypatch) -> None:
+    settings = Settings(_env_file=None, telegram_bot_token="token")
+    adapter = TelegramProgressAdapter(settings)
+    sent_messages: list[tuple[str, str, object]] = []
+
+    class FakeBot:
+        def __init__(self, token: str) -> None:
+            self.token = token
+
+        async def send_message(self, chat_id: str, text: str, reply_markup=None) -> None:
+            sent_messages.append((chat_id, text, reply_markup))
+
+    monkeypatch.setattr("telegram.Bot", FakeBot)
+
+    class FakeTask:
+        metadata_json = {"source": "telegram", "source_chat_id": "123"}
+
+    await adapter.send(FakeTask(), "step update", stage="step_summary")
+    await adapter.send(FakeTask(), "needs approval\nApproval ID: 11111111-1111-1111-1111-111111111111", stage="approval_required")
+    await adapter.send(FakeTask(), "final result", stage="report_result")
+
+    assert sent_messages[0][0] == "123"
+    assert "Approval ID:" in sent_messages[0][1]
+    assert sent_messages[0][2] is not None
+    assert sent_messages[1] == ("123", "final result", None)

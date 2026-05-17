@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from uuid import UUID
 
@@ -104,7 +105,7 @@ class SpecialistAgentRuntime:
             settings=self._settings,
             planning_model=planning_model,
             skills_root=Path.cwd() / "skills",
-            allowed_tool_roots=[Path.cwd()],
+            allowed_tool_roots=_default_allowed_tool_roots(),
         )
         result = await runner.run_task(task_id)
         actual_cost = await self._finalize_agent_run(task_id=task_id, agent_run_id=agent_run.id, result=result)
@@ -168,6 +169,21 @@ class SpecialistAgentRuntime:
 
 def _estimate_cost_hint(cost_level: str) -> float:
     return {"low": 0.01, "medium": 0.05, "high": 0.12}.get(cost_level, 0.05)
+
+
+def _default_allowed_tool_roots() -> list[Path]:
+    cwd = Path.cwd().resolve()
+    roots = [cwd]
+    if os.name != "nt":
+        roots.extend(Path(path) for path in ("/opt", "/srv", "/var", "/etc", "/home", "/root"))
+    unique_roots: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if root in seen:
+            continue
+        unique_roots.append(root)
+        seen.add(root)
+    return unique_roots
 
 
 _default_specialist_runtime: SpecialistAgentRuntime | None = None

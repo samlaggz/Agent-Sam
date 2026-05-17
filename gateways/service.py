@@ -1065,6 +1065,8 @@ class AgentGatewayService:
 
     def _special_chat_reply(self, text: str) -> str | None:
         normalized_text = self._normalize_text(text)
+        if _CHAT_GREETING_PATTERN.match(normalized_text):
+            return "Hello! How can I help?"
         if "internet access" in normalized_text or "web access" in normalized_text or "online access" in normalized_text:
             if self._settings.enable_web_research:
                 return "Yes. I have web research enabled for routed work. If you ask me to look something up, I can hand it to the research flow and send the result back."

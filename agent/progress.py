@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Protocol
 from uuid import UUID
 
@@ -18,7 +19,7 @@ class TelegramProgressAdapter:
     def __init__(self, settings: Settings) -> None:
         self._token = settings.telegram_bot_token
 
-    async def send(self, task: Task, text: str) -> None:
+    async def send(self, task: Task, text: str, *, stage: str) -> None:
         if not self._token:
             return
 
@@ -26,15 +27,24 @@ class TelegramProgressAdapter:
         if metadata.get("source") != "telegram":
             return
 
+        if stage not in {"report_result", "approval_required"}:
+            return
+
         chat_id = metadata.get("source_chat_id")
         if not chat_id:
             return
 
         try:
-            from telegram import Bot
+            from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
             bot = Bot(token=self._token)
-            await bot.send_message(chat_id=chat_id, text=text)
+            reply_markup = None
+            approval_id = _extract_approval_id(text)
+            if approval_id is not None and stage == "approval_required":
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Approve", callback_data=f"approve:{approval_id}")]]
+                )
+            await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
         except Exception:
             return
 
@@ -63,6 +73,7 @@ class TaskProgressReporter:
                         "source": "agent",
                         "stage": stage,
                         "transport": transport,
+                        "source_chat_id": metadata.get("source_chat_id"),
                     },
                 )
             )
@@ -70,4 +81,11 @@ class TaskProgressReporter:
 
         adapter = self._adapters.get(str(transport)) if transport is not None else None
         if adapter is not None:
-            await adapter.send(task, text)
+            await adapter.send(task, text, stage=stage)
+
+
+def _extract_approval_id(text: str) -> str | None:
+    match = re.search(r"Approval ID:\s*([0-9a-fA-F-]{36})", text)
+    if match is None:
+        return None
+    return match.group(1)

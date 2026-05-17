@@ -207,6 +207,7 @@ class AgentNodeHandlers:
             await self._progress_reporter.report(task_id, outcome.summary, stage="step_summary")
 
             if outcome.status == "pending_approval":
+                await self._progress_reporter.report(task_id, outcome.summary, stage="approval_required")
                 final_status = "paused"
                 final_summary = outcome.summary
                 pending_approval_id = str(outcome.approval_id) if outcome.approval_id is not None else None

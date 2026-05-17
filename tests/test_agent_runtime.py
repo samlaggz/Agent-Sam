@@ -470,3 +470,18 @@ async def test_agent_runtime_web_open_falls_back_to_recent_search_url(
 
     assert [tool_call.tool_name for tool_call in tool_calls] == ["web_search", "web_open"]
     assert "Opened https://docs.litellm.ai/" in (tool_calls[1].output_text or "")
+
+
+def test_default_allowed_tool_roots_include_common_linux_paths(monkeypatch) -> None:
+    import agents.runtime as runtime_module
+
+    class FakeOS:
+        name = "posix"
+
+    monkeypatch.setattr(runtime_module, "os", FakeOS())
+
+    roots = runtime_module._default_allowed_tool_roots()
+    rendered_roots = {str(root).replace("\\", "/") for root in roots}
+
+    assert any(root.endswith("/opt") or root == "/opt" for root in rendered_roots)
+    assert any(root.endswith("/var") or root == "/var" for root in rendered_roots)

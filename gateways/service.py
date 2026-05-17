@@ -34,6 +34,7 @@ from services.model_router import ModelExecutionRequest, ModelRouter, infer_prov
 MAX_TASK_TITLE_LENGTH = 80
 INLINE_CHAT_MAX_TOKENS = 220
 INTENT_CLASSIFIER_MAX_TOKENS = 32
+FOLLOWUP_CONFIRMATION_WINDOW = 6
 logger = logging.getLogger(__name__)
 
 _TASK_ACTION_PATTERN = re.compile(
@@ -44,6 +45,7 @@ _TASK_REQUEST_PREFIX_PATTERN = re.compile(
 )
 _CHAT_GREETING_PATTERN = re.compile(r"^(hi|hello|hey|yo|thanks|thank you)\b")
 _CHAT_QUESTION_PREFIX_PATTERN = re.compile(r"^(what|why|how|who|where|when|which|explain|tell me|show me)\b")
+_AFFIRMATION_PATTERN = re.compile(r"^(yes|yeah|yep|ok|okay|sure|please do|go ahead|do it|do it fast|yes do it fast)\b")
 _TASK_STARTERS = {
     "add",
     "analyze",
@@ -159,10 +161,14 @@ class AgentGatewayService:
         message: Message,
         incoming: IncomingGatewayMessage,
     ) -> GatewayResponse:
+        inherited_task_text = await self._resolve_followup_task_text(session, incoming)
+        text_for_intent = inherited_task_text or incoming.text
         intent = await self._decide_text_intent(incoming.text)
+        if inherited_task_text is not None:
+            intent = "task"
         if intent == "chat":
             return await self._handle_chat_message(session, message, incoming)
-        task = await self._create_task_from_text(session, incoming, message)
+        task = await self._create_task_from_text(session, incoming, message, task_text=text_for_intent)
         route_preview = self._route_task_preview(task.title, task.description or "")
         return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
 
@@ -815,6 +821,8 @@ class AgentGatewayService:
         normalized_text = self._normalize_text(text)
         if self._is_capability_question(normalized_text) or self._is_followup_question(normalized_text):
             return "chat"
+        if self._is_current_events_request(normalized_text):
+            return "task"
         if self._is_strong_task_request(normalized_text, original_text=text):
             return "task"
         if self._is_strong_chat_message(normalized_text):
@@ -906,6 +914,7 @@ class AgentGatewayService:
                 "content": (
                     "You are Agent Sam in an interactive gateway chat. Reply directly and concisely. "
                     "Do not claim that background work, file edits, or task execution already happened unless the user explicitly saw that happen. "
+                    "Do not promise that you are checking, searching, or doing a task right now unless a tracked task has already been created in the chat. "
                     "This gateway chats inline for normal conversation and creates tracked tasks only for explicit work requests. "
                     "If asked what this interface is, explain that it is the Agent Sam chat gateway and mention /new for explicit task creation. "
                     f"Web research is currently {web_access_state}. "
@@ -990,6 +999,25 @@ class AgentGatewayService:
         )
         return any(phrase in normalized_text for phrase in capability_phrases)
 
+    def _is_current_events_request(self, normalized_text: str) -> bool:
+        current_event_markers = (
+            "latest news",
+            "what is the latest news",
+            "current news",
+            "breaking news",
+            "what's happening",
+            "whats happening",
+            "latest update on",
+            "news on",
+            "war news",
+            "iran war news",
+        )
+        if any(marker in normalized_text for marker in current_event_markers):
+            return True
+        if "news" in normalized_text and any(token in normalized_text for token in ("iran", "war", "conflict", "attack", "strike")):
+            return True
+        return False
+
     def _is_followup_question(self, normalized_text: str) -> bool:
         followup_phrases = (
             "any update",
@@ -1000,6 +1028,9 @@ class AgentGatewayService:
             "did you finish",
             "are you done",
             "progress update",
+            "you checked",
+            "can you share the progress",
+            "how are you checking it",
         )
         return any(phrase in normalized_text for phrase in followup_phrases)
 
@@ -1037,6 +1068,29 @@ class AgentGatewayService:
             if self._settings.enable_web_research:
                 return "Yes. I have web research enabled for routed work. If you ask me to look something up, I can hand it to the research flow and send the result back."
             return "No. Web research is currently disabled in this deployment."
+        return None
+
+    async def _resolve_followup_task_text(
+        self,
+        session: AsyncSession,
+        incoming: IncomingGatewayMessage,
+    ) -> str | None:
+        normalized_text = self._normalize_text(incoming.text)
+        if not _AFFIRMATION_PATTERN.match(normalized_text):
+            return None
+
+        history = await self._load_recent_conversation_messages(session, incoming, limit=FOLLOWUP_CONFIRMATION_WINDOW)
+        for item in reversed(history):
+            if item["role"] != "user":
+                continue
+            prior_text = item["content"].strip()
+            prior_normalized = self._normalize_text(prior_text)
+            if prior_normalized == normalized_text:
+                continue
+            if self._is_capability_question(prior_normalized):
+                continue
+            if self._is_current_events_request(prior_normalized) or self._looks_like_task_request(prior_normalized, original_text=prior_text):
+                return prior_text
         return None
 
     async def _load_recent_conversation_messages(

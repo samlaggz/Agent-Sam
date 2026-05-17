@@ -283,6 +283,113 @@ async def test_followup_question_uses_recent_task_from_same_chat(
     assert "Found official docs and summary." in followup_response.text
 
 
+async def test_current_events_request_creates_research_task_immediately(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True),
+    )
+
+    response = await service.handle_incoming_message(
+        build_incoming_message(
+            workspace,
+            user,
+            "Okay can you check what is the latest news on iran war and give me summary?",
+            gateway_name="telegram",
+        )
+    )
+
+    assert response.task_id is not None
+    assert "Planned agent: research_agent" in response.text
+
+
+async def test_affirmation_inherits_previous_actionable_request(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True),
+    )
+
+    first_response = await service.handle_incoming_message(
+        build_incoming_message(
+            workspace,
+            user,
+            "What is latest news on iran war?",
+            gateway_name="telegram",
+        )
+    )
+
+    assert first_response.task_id is not None
+
+    followup_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Yes do it fast", gateway_name="telegram")
+    )
+
+    assert followup_response.task_id is not None
+
+    async with session_factory() as session:
+        task = await session.get(Task, followup_response.task_id)
+        assert task is not None
+        assert "latest news on iran war" in (task.description or "").lower()
+
+
+async def test_capability_question_does_not_spawn_research_task_then_followup_status_uses_real_task(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True),
+    )
+
+    capability_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Can you check do you have internet access?", gateway_name="telegram")
+    )
+
+    assert capability_response.task_id is None
+
+    create_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Iran war news?", gateway_name="telegram")
+    )
+
+    async with session_factory() as session:
+        task = await session.get(Task, create_response.task_id)
+        assert task is not None
+        task.status = "running"
+        session.add(
+            Message(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                task_id=task.id,
+                role="assistant",
+                content="Task completed: Iran war news?\nCollected latest public sources.",
+                metadata_json={"transport": "telegram", "source_chat_id": "telegram-chat-1", "stage": "report_result"},
+            )
+        )
+        await session.commit()
+
+    followup_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Any update?", gateway_name="telegram")
+    )
+
+    assert followup_response.task_id is None
+    assert "Iran war news?" in followup_response.text
+    assert "Collected latest public sources." in followup_response.text
+
+
 async def test_handle_new_queue_and_status_commands(
     session_factory: async_sessionmaker[AsyncSession],
     workspace: Workspace,

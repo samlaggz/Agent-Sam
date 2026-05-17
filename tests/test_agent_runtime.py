@@ -472,7 +472,7 @@ async def test_agent_runtime_web_open_falls_back_to_recent_search_url(
     assert "Opened https://docs.litellm.ai/" in (tool_calls[1].output_text or "")
 
 
-def test_default_allowed_tool_roots_include_common_linux_paths(monkeypatch) -> None:
+async def test_default_allowed_tool_roots_include_common_linux_paths(monkeypatch) -> None:
     import agents.runtime as runtime_module
 
     class FakeOS:

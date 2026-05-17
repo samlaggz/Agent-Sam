@@ -712,20 +712,14 @@ class AgentGatewayService:
         return f"{first_line[: MAX_TASK_TITLE_LENGTH - 3].rstrip()}..."
 
     def _format_task_confirmation(self, task: Task, *, route_preview=None) -> str:
-        message = (
-            "Task created.\n"
-            f"ID: {task.id}\n"
-            f"Title: {task.title}\n"
-            f"Priority: {task.priority}\n"
-            f"Status: {task.status}"
-        )
+        message = "Got it — I’ve queued that for the right specialist."
         if route_preview is not None:
             message += (
                 "\n"
-                f"Planned agent: {route_preview.agent_slug}\n"
-                f"Model: {route_preview.model}\n"
-                f"Reason: {route_preview.reason}"
+                f"Agent: {route_preview.agent_slug}\n"
+                f"Why: {route_preview.reason}"
             )
+        message += f"\nTask ID: {task.id}"
         return message
 
     def _format_task_status(self, task: Task, subtask_count: int) -> str:

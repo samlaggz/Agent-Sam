@@ -83,7 +83,8 @@ async def test_handle_text_message_persists_message_and_creates_task(
     response = await service.handle_incoming_message(incoming)
 
     assert response.task_id is not None
-    assert "Task created." in response.text
+    assert "queued that for the right specialist" in response.text.lower()
+    assert "Task ID:" in response.text
 
     async with session_factory() as session:
         db_message = await session.scalar(select(Message).where(Message.content == incoming.text))
@@ -117,8 +118,8 @@ async def test_handle_text_message_returns_inline_chat_reply_without_creating_ta
     response = await service.handle_incoming_message(incoming)
 
     assert response.task_id is None
-    assert response.text == "Hi there. Ask a question or use /new when you want queued work."
-    assert len(model_router.requests) == 1
+    assert response.text == "Hello! How can I help?"
+    assert len(model_router.requests) == 0
 
     async with session_factory() as session:
         db_message = await session.scalar(select(Message).where(Message.content == incoming.text))
@@ -203,8 +204,24 @@ async def test_handle_text_message_creates_task_for_explicit_work_request_questi
     )
 
     assert response.task_id is not None
-    assert "Task created." in response.text
-    assert "Planned agent: server_ops_agent" in response.text
+    assert "queued that for the right specialist" in response.text.lower()
+    assert "Agent: server_ops_agent" in response.text
+
+
+async def test_task_confirmation_is_human_readable(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(session_factory, workspace, user)
+
+    response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Can you find shivadrive folder?")
+    )
+
+    assert response.task_id is not None
+    assert "Got it — I’ve queued that for the right specialist." in response.text
+    assert "Task ID:" in response.text
 
 
 async def test_handle_text_message_creates_research_task_and_sets_telegram_progress_metadata(
@@ -228,7 +245,7 @@ async def test_handle_text_message_creates_research_task_and_sets_telegram_progr
     response = await service.handle_incoming_message(incoming)
 
     assert response.task_id is not None
-    assert "Planned agent: research_agent" in response.text
+    assert "Agent: research_agent" in response.text
 
     async with session_factory() as session:
         task = await session.get(Task, response.task_id)
@@ -305,7 +322,7 @@ async def test_current_events_request_creates_research_task_immediately(
     )
 
     assert response.task_id is not None
-    assert "Planned agent: research_agent" in response.text
+    assert "Agent: research_agent" in response.text
 
 
 async def test_affirmation_inherits_previous_actionable_request(
@@ -413,7 +430,7 @@ async def test_handle_new_queue_and_status_commands(
         )
     )
 
-    assert "Task created." in create_response.text
+    assert "queued that for the right specialist" in create_response.text.lower()
     assert "Queue status" in queue_response.text
     assert "Pending: 1" in queue_response.text
     assert f"Task {create_response.task_id}" in status_response.text

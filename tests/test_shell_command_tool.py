@@ -209,3 +209,27 @@ async def test_process_inspection_with_grep_is_safe(
 
     assert result.requires_approval is False
     assert result.status in {"completed", "failed"}
+
+
+async def test_find_directory_command_is_treated_as_read_only_execution(
+    session_factory: async_sessionmaker[AsyncSession],
+    task: Task,
+    tmp_path,
+) -> None:
+    target_dir = tmp_path / "shiva-drive"
+    target_dir.mkdir()
+    tool = ShellCommandTool(session_factory, allowed_roots=[tmp_path])
+
+    result = await tool.submit_command(
+        ShellCommandRequest(
+            command="find . -type d -iname '*shiva*'",
+            working_directory=str(tmp_path),
+            reason="Find matching directories.",
+            task_id=task.id,
+        )
+    )
+
+    assert result.requires_approval is False
+    assert result.status in {"completed", "failed"}
+    if result.status == "completed":
+        assert "shiva-drive" in result.stdout

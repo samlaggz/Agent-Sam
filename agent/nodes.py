@@ -626,6 +626,13 @@ class AgentNodeHandlers:
                 tool_call_id=result.tool_call_id,
                 approval_id=result.approval_id,
             )
+        if self._is_read_only_inspection_command(command):
+            inspection_summary = self._summarize_read_only_command_result(command, result)
+            return StepExecutionOutcome(
+                status="completed",
+                summary=inspection_summary,
+                tool_call_id=result.tool_call_id,
+            )
         if result.status == "completed":
             summary = (
                 f"Step {step['position']} completed with shell_command. "
@@ -643,6 +650,43 @@ class AgentNodeHandlers:
             summary=f"Step {step['position']} failed while running `{command}`: {self._excerpt(detail)}",
             tool_call_id=result.tool_call_id,
         )
+
+    def _is_read_only_inspection_command(self, command: str) -> bool:
+        normalized = " ".join(command.strip().lower().split())
+        return normalized.startswith(
+            (
+                "find ",
+                "grep ",
+                "rg ",
+                "ripgrep ",
+                "ls ",
+                "dir ",
+                "cat ",
+                "head ",
+                "tail ",
+                "ps ",
+                "pgrep ",
+                "which ",
+                "where ",
+            )
+        ) or "| grep" in normalized
+
+    def _summarize_read_only_command_result(self, command: str, result: ShellCommandResult) -> str:
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if lines:
+            preview = lines[:6]
+            bullet_list = "\n".join(f"- {line}" for line in preview)
+            extra = ""
+            if len(lines) > len(preview):
+                extra = f"\n- ...and {len(lines) - len(preview)} more"
+            if command.strip().lower().startswith("ps ") or "| grep" in command.lower():
+                return f"I checked the running processes and found:\n{bullet_list}{extra}"
+            return f"I found these matches:\n{bullet_list}{extra}"
+
+        stderr_text = (result.stderr or "").strip().lower()
+        if result.status == "failed" and stderr_text and "permission denied" not in stderr_text:
+            return f"I couldn't complete that inspection cleanly: {self._excerpt(result.stderr or '')}"
+        return "I checked, but I couldn't find any matching results."
 
     async def _apply_step_outcome(
         self,

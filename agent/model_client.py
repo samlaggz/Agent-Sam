@@ -335,13 +335,20 @@ class HermesModelClient:
             "7. Before symlinking nginx configs, clean broken symlinks:\n"
             "   find /etc/nginx/sites-enabled/ -xtype l -delete\n"
             "8. When done and verified, call task_complete with a clear summary.\n"
-            "9. If you cannot complete the task after trying, call task_failed.\n"
+            "9. If you cannot complete the task after trying, call task_failed with the reason.\n"
             "10. Save important discoveries to memory (server_fact, decision, warning).\n"
             "11. Keep commands concise. One logical action per tool call.\n"
             "12. NEVER cat a file that doesn't exist. Create it first.\n"
             "13. NEVER use sudo — you are already running as root.\n"
             "14. When a command fails with a non-zero exit code, READ the error output carefully "
-            "and fix the issue. Do NOT repeat the same failing command."
+            "and fix the issue. Do NOT repeat the same failing command.\n"
+            "15. NEVER call task_complete if you only asked a question or requested clarification. "
+            "If you need more info, call task_failed with a clear question.\n"
+            "16. You can ONLY run shell commands and web searches. You CANNOT interact with "
+            "web browser UIs, fill login forms, click buttons, or use Playwright/Selenium. "
+            "If the user asks you to log into a website, explain this limitation honestly.\n"
+            "17. READ the conversation context in the task description carefully. It contains "
+            "the recent chat history so you understand what the user has been discussing."
         )
 
     def _load_profile_prompt(self) -> str:

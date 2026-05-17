@@ -655,12 +655,18 @@ class AgentGatewayService:
         if not normalized_text:
             raise ValueError("Cannot create a task from an empty message.")
 
+        # Include recent conversation history for context
+        conversation_context = await self._build_conversation_context(session, incoming)
+        description = normalized_text
+        if conversation_context:
+            description = f"{normalized_text}\n\n## Recent conversation context:\n{conversation_context}"
+
         title = self._build_task_title(normalized_text)
         task = await create_task_request(
             session,
             workspace_id=incoming.workspace_id,
             title=title,
-            description=normalized_text,
+            description=description,
             created_by_user_id=incoming.user_id,
             metadata_json={
                 "source": incoming.gateway_name,
@@ -1163,6 +1169,25 @@ class AgentGatewayService:
         except Exception:
             logger.debug("Failed to load chat memories", exc_info=True)
             return []
+
+    async def _build_conversation_context(
+        self,
+        session: AsyncSession,
+        incoming: IncomingGatewayMessage,
+    ) -> str:
+        """Build a summary of recent conversation for task context."""
+        try:
+            history = await self._load_recent_conversation_messages(session, incoming, limit=10)
+            if not history:
+                return ""
+            lines: list[str] = []
+            for msg in history[-8:]:
+                role = "User" if msg["role"] == "user" else "Agent"
+                content = msg["content"].strip()[:200]
+                lines.append(f"{role}: {content}")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def _fallback_chat_reply(self, text: str) -> str:
         normalized_text = self._normalize_text(text)

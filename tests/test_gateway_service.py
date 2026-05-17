@@ -95,7 +95,7 @@ async def test_handle_text_message_persists_message_and_creates_task(
 
         task = await session.get(Task, db_message.task_id)
         assert task is not None
-        assert task.description == incoming.text
+        assert task.description.startswith(incoming.text)
         assert task.created_by_user_id == user.id
         assert task.workspace_id == workspace.id
 

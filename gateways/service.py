@@ -172,11 +172,16 @@ class AgentGatewayService:
         message: Message,
         incoming: IncomingGatewayMessage,
     ) -> GatewayResponse:
-        del session, message
+        del message
+        followup_reply = await self._maybe_answer_task_followup(session, incoming, incoming.text)
+        if followup_reply is not None:
+            return GatewayResponse(text=followup_reply)
+
+        history = await self._load_recent_conversation_messages(session, incoming)
         special_reply = self._special_chat_reply(incoming.text)
         if special_reply is not None:
             return GatewayResponse(text=special_reply)
-        reply = await self._generate_inline_chat_reply(incoming.text)
+        reply = await self._generate_inline_chat_reply(incoming.text, history=history)
         return GatewayResponse(text=reply)
 
     async def _handle_start_command(
@@ -808,6 +813,8 @@ class AgentGatewayService:
 
     async def _decide_text_intent(self, text: str) -> str:
         normalized_text = self._normalize_text(text)
+        if self._is_capability_question(normalized_text) or self._is_followup_question(normalized_text):
+            return "chat"
         if self._is_strong_task_request(normalized_text, original_text=text):
             return "task"
         if self._is_strong_chat_message(normalized_text):
@@ -854,7 +861,7 @@ class AgentGatewayService:
             return "chat"
         return None
 
-    async def _generate_inline_chat_reply(self, text: str) -> str:
+    async def _generate_inline_chat_reply(self, text: str, *, history: list[dict[str, str]] | None = None) -> str:
         model_name = self._resolve_inline_chat_model()
         if not self._can_run_model(model_name):
             return self._fallback_chat_reply(text)
@@ -864,7 +871,7 @@ class AgentGatewayService:
                 ModelExecutionRequest(
                     agent_slug="gateway_chat_agent",
                     model=model_name,
-                    messages=self._build_inline_chat_messages(text),
+                    messages=self._build_inline_chat_messages(text, history=history or []),
                     temperature=0.3,
                     max_tokens=INLINE_CHAT_MAX_TOKENS,
                     metadata={"gateway_mode": "inline_chat"},
@@ -891,9 +898,9 @@ class AgentGatewayService:
             {"role": "user", "content": text.strip()},
         ]
 
-    def _build_inline_chat_messages(self, text: str) -> list[dict[str, str]]:
+    def _build_inline_chat_messages(self, text: str, *, history: list[dict[str, str]]) -> list[dict[str, str]]:
         web_access_state = "enabled" if self._settings.enable_web_research else "disabled"
-        return [
+        messages: list[dict[str, str]] = [
             {
                 "role": "system",
                 "content": (
@@ -902,11 +909,14 @@ class AgentGatewayService:
                     "This gateway chats inline for normal conversation and creates tracked tasks only for explicit work requests. "
                     "If asked what this interface is, explain that it is the Agent Sam chat gateway and mention /new for explicit task creation. "
                     f"Web research is currently {web_access_state}. "
-                    "If asked whether you have internet or web access, answer based on that setting and explain that internet lookups are routed as tracked work when needed."
+                    "If asked whether you have internet or web access, answer based on that setting and explain that internet lookups are routed as tracked work when needed. "
+                    "Use the recent conversation history when replying to follow-up questions so responses stay contextual and human."
                 ),
             },
-            {"role": "user", "content": text.strip()},
         ]
+        messages.extend(history)
+        messages.append({"role": "user", "content": text.strip()})
+        return messages
 
     def _resolve_inline_chat_model(self) -> str:
         return self._settings.default_model.strip() or self._settings.litellm_model.strip()
@@ -968,6 +978,31 @@ class AgentGatewayService:
     def _looks_like_task_request_question(self, normalized_text: str) -> bool:
         return bool(_TASK_REQUEST_PREFIX_PATTERN.match(normalized_text) and _TASK_ACTION_PATTERN.search(normalized_text))
 
+    def _is_capability_question(self, normalized_text: str) -> bool:
+        capability_phrases = (
+            "do you have internet access",
+            "do you have web access",
+            "do you have online access",
+            "can you access the internet",
+            "can you browse the internet",
+            "what can you do",
+            "what tools do you have",
+        )
+        return any(phrase in normalized_text for phrase in capability_phrases)
+
+    def _is_followup_question(self, normalized_text: str) -> bool:
+        followup_phrases = (
+            "any update",
+            "what's the update",
+            "whats the update",
+            "status update",
+            "what happened",
+            "did you finish",
+            "are you done",
+            "progress update",
+        )
+        return any(phrase in normalized_text for phrase in followup_phrases)
+
     def _fallback_chat_reply(self, text: str) -> str:
         normalized_text = self._normalize_text(text)
         if "internet access" in normalized_text or "web access" in normalized_text or "online access" in normalized_text:
@@ -1002,6 +1037,94 @@ class AgentGatewayService:
             if self._settings.enable_web_research:
                 return "Yes. I have web research enabled for routed work. If you ask me to look something up, I can hand it to the research flow and send the result back."
             return "No. Web research is currently disabled in this deployment."
+        return None
+
+    async def _load_recent_conversation_messages(
+        self,
+        session: AsyncSession,
+        incoming: IncomingGatewayMessage,
+        *,
+        limit: int = 8,
+    ) -> list[dict[str, str]]:
+        result = await session.execute(
+            select(Message)
+            .where(Message.workspace_id == incoming.workspace_id, Message.user_id == incoming.user_id)
+            .order_by(Message.created_at.desc())
+            .limit(30)
+        )
+        recent_messages = list(reversed(result.scalars().all()))
+
+        history: list[dict[str, str]] = []
+        for recent_message in recent_messages:
+            metadata = recent_message.metadata_json if isinstance(recent_message.metadata_json, dict) else {}
+            if recent_message.role == "user":
+                if metadata.get("gateway_name") != incoming.gateway_name:
+                    continue
+                if metadata.get("gateway_chat_id") != incoming.gateway_chat.gateway_chat_id:
+                    continue
+            elif recent_message.role == "assistant":
+                transport = metadata.get("transport") or metadata.get("gateway_name")
+                chat_id = metadata.get("source_chat_id") or metadata.get("gateway_chat_id")
+                if transport not in {incoming.gateway_name, "agent"} and transport is not None:
+                    continue
+                if chat_id not in {None, incoming.gateway_chat.gateway_chat_id}:
+                    continue
+            else:
+                continue
+
+            if not recent_message.content.strip():
+                continue
+            history.append({"role": recent_message.role if recent_message.role in {"user", "assistant"} else "assistant", "content": recent_message.content.strip()})
+
+        return history[-limit:]
+
+    async def _maybe_answer_task_followup(
+        self,
+        session: AsyncSession,
+        incoming: IncomingGatewayMessage,
+        text: str,
+    ) -> str | None:
+        normalized_text = self._normalize_text(text)
+        if not self._is_followup_question(normalized_text):
+            return None
+
+        recent_task = await self._load_recent_task_for_chat(session, incoming)
+        if recent_task is None:
+            return None
+
+        latest_message_result = await session.execute(
+            select(Message)
+            .where(Message.task_id == recent_task.id, Message.role == "assistant")
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        latest_message = latest_message_result.scalar_one_or_none()
+        status_line = f"Latest task: {recent_task.title}\nStatus: {recent_task.status}"
+        if latest_message is not None and latest_message.content.strip():
+            return status_line + "\n\n" + latest_message.content.strip()
+        return status_line
+
+    async def _load_recent_task_for_chat(
+        self,
+        session: AsyncSession,
+        incoming: IncomingGatewayMessage,
+    ) -> Task | None:
+        result = await session.execute(
+            select(Task)
+            .where(Task.workspace_id == incoming.workspace_id, Task.created_by_user_id == incoming.user_id)
+            .order_by(Task.created_at.desc())
+            .limit(20)
+        )
+        tasks = result.scalars().all()
+        for task in tasks:
+            metadata = task.metadata_json if isinstance(task.metadata_json, dict) else {}
+            source = metadata.get("source") or metadata.get("gateway_name")
+            chat_id = metadata.get("source_chat_id") or metadata.get("gateway_chat_id")
+            if source != incoming.gateway_name:
+                continue
+            if chat_id != incoming.gateway_chat.gateway_chat_id:
+                continue
+            return task
         return None
 
     def _parse_json_object(self, text: str) -> dict[str, Any] | None:

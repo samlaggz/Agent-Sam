@@ -146,6 +146,26 @@ async def test_handle_text_message_reports_web_access_when_enabled(
     assert "Yes. I have web research enabled" in response.text
 
 
+async def test_handle_text_message_capability_question_stays_chat_even_when_action_words_exist(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True),
+    )
+
+    response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Can you check do you have internet access?")
+    )
+
+    assert response.task_id is None
+    assert "web research enabled" in response.text.lower()
+
+
 async def test_handle_text_message_uses_fallback_chat_reply_when_no_model_is_available(
     session_factory: async_sessionmaker[AsyncSession],
     workspace: Workspace,
@@ -216,6 +236,51 @@ async def test_handle_text_message_creates_research_task_and_sets_telegram_progr
         assert task.metadata_json["source"] == "telegram"
         assert task.metadata_json["source_chat_id"] == "telegram-chat-1"
         assert task.metadata_json["source_user_id"] == "telegram-user-1"
+
+
+async def test_followup_question_uses_recent_task_from_same_chat(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True),
+    )
+    incoming = build_incoming_message(
+        workspace,
+        user,
+        "check the internet for the latest LiteLLM docs",
+        gateway_name="telegram",
+    )
+
+    create_response = await service.handle_incoming_message(incoming)
+
+    async with session_factory() as session:
+        task = await session.get(Task, create_response.task_id)
+        assert task is not None
+        task.status = "running"
+        session.add(
+            Message(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                task_id=task.id,
+                role="assistant",
+                content="Task completed: check the internet for the latest LiteLLM docs\nFound official docs and summary.",
+                metadata_json={"transport": "telegram", "source_chat_id": "telegram-chat-1", "stage": "report_result"},
+            )
+        )
+        await session.commit()
+
+    followup_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Any update?", gateway_name="telegram")
+    )
+
+    assert followup_response.task_id is None
+    assert "Latest task:" in followup_response.text
+    assert "Found official docs and summary." in followup_response.text
 
 
 async def test_handle_new_queue_and_status_commands(

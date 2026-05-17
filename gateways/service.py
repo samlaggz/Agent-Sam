@@ -1310,24 +1310,47 @@ class AgentGatewayService:
         )
         return any(phrase in normalized_text for phrase in phrases)
 
+    def _is_pwd_question(self, normalized_text: str) -> bool:
+        phrases = (
+            "give me pwd",
+            "pwd for",
+            "what is the path",
+            "what is the full path",
+            "where is this folder",
+            "where is that folder",
+            "folder path",
+            "full path",
+        )
+        return any(phrase in normalized_text for phrase in phrases)
+
+    def _extract_best_path_from_messages(self, messages: list) -> str | None:
+        path_re = re.compile(r"(/(?:[a-zA-Z0-9_.\-]+/)*[a-zA-Z0-9_.\-]+)")
+        for msg in messages:
+            content = msg.content or ""
+            matches = path_re.findall(content)
+            for m in matches:
+                if len(m) > 4 and "/proc" not in m and "/sys" not in m:
+                    return m
+        return None
+
     async def _enrich_with_recent_path_context(self, session: AsyncSession, incoming: IncomingGatewayMessage, text: str) -> str:
         normalized_text = self._normalize_text(text)
-        if not self._is_folder_contents_question(normalized_text):
+        if not (self._is_folder_contents_question(normalized_text) or self._is_pwd_question(normalized_text)):
             return text
 
         result = await session.execute(
             select(Message)
-            .where(Message.workspace_id == incoming.workspace_id, Message.user_id == incoming.user_id)
+            .where(Message.workspace_id == incoming.workspace_id)
             .order_by(Message.created_at.desc())
-            .limit(20)
+            .limit(40)
         )
-        recent_messages = result.scalars().all()
-        for msg in recent_messages:
-            if self._is_path_reference(msg.content):
-                match = re.search(r"(/[a-zA-Z0-9_.\-]+){2,}", msg.content)
-                if match:
-                    path = match.group(0)
-                    return f"List contents of {path} using ls -la"
+        recent_messages = list(result.scalars().all())
+
+        path = self._extract_best_path_from_messages(recent_messages)
+        if path:
+            if self._is_pwd_question(normalized_text):
+                return f"Print the full path of {path} using: cd {path} && pwd"
+            return f"List the contents of {path} using: ls -la {path}"
         return text
 
     def _parse_json_object(self, text: str) -> dict[str, Any] | None:

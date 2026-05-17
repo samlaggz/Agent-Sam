@@ -125,7 +125,13 @@ class LiteLLMPlanningModel:
             "Use null for tool_name and command when the step is reasoning-only. "
             "Do not include markdown fences. "
             "IMPORTANT: Never use shell_command to query internal task queues, task databases, or task management systems — "
-            "those are handled natively by the gateway. Only use shell_command for real filesystem, process, or network operations."
+            "those are handled natively by the gateway. Only use shell_command for real filesystem, process, or network operations. "
+            "When searching for a folder or file by name, use: find / -name \'<name>\' -type d 2>/dev/null "
+            "When listing folder contents, use: ls -la <path> "
+            "When getting the full path of a known location, use: realpath <path> OR readlink -f <path> "
+            "Always use absolute paths in commands. Do not use <placeholder> text in the command field."
+            "Commands must be valid shell commands with no placeholder text like <folder_path>."
+            "If the exact path is unknown, first run: find / -name \'<name>\' -type d 2>/dev/null"
         )
         user_prompt = json.dumps(
             self._build_request_payload(

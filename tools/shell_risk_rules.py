@@ -159,4 +159,24 @@ SAFE_RULES = [
         pattern=r"^(python|python3|py)\s+--version\b",
         reason="Checking the Python version is safe.",
     ),
+    RiskRule(
+        name="cd-and-pwd",
+        pattern=r"^(cd\s+\S+\s*&&\s*pwd|pwd|echo\s+\$PWD)$",
+        reason="Navigating to a directory and printing the path is safe.",
+    ),
+    RiskRule(
+        name="find-readonly",
+        pattern=r"^find\s+",
+        reason="Read-only filesystem search is safe.",
+    ),
+    RiskRule(
+        name="ls-variants",
+        pattern=r"^ls(\s+-[la]+)?(\s+\S+)?$",
+        reason="Directory listing is safe.",
+    ),
+    RiskRule(
+        name="cat-readonly",
+        pattern=r"^cat\s+",
+        reason="Read-only file cat is safe.",
+    ),
 ]

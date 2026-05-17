@@ -410,6 +410,12 @@ async def _main() -> None:
     except Exception:
         pass
 
+    _JUNK_LINES = frozenset({
+        "try:", "checking the connection", "checking the proxy and the firewall",
+        "running windows network diagnostics", "err_connection_timed_out",
+        "err_connection_refused", "err_name_not_resolved",
+    })
+
     while True:
         try:
             raw_input = input("  \033[33mYou\033[0m: ")
@@ -418,8 +424,10 @@ async def _main() -> None:
             _print_agent("Goodbye.")
             break
 
-        # Join multi-line paste into a single message
-        user_input = " ".join(line.strip() for line in raw_input.splitlines() if line.strip())
+        # Join multi-line paste into a single message and filter out browser junk lines
+        lines = [line.strip() for line in raw_input.splitlines() if line.strip()]
+        filtered = [line for line in lines if line.lower() not in _JUNK_LINES]
+        user_input = " ".join(filtered)
         if not user_input:
             continue
 

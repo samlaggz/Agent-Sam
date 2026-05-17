@@ -124,14 +124,14 @@ class LiteLLMPlanningModel:
             "Each step must include: title, description, tool_name, command, reason. "
             "Use null for tool_name and command when the step is reasoning-only. "
             "Do not include markdown fences. "
-            "IMPORTANT: Never use shell_command to query internal task queues, task databases, or task management systems — "
-            "those are handled natively by the gateway. Only use shell_command for real filesystem, process, or network operations. "
-            "When searching for a folder or file by name, use: find / -name \'<name>\' -type d 2>/dev/null "
-            "When listing folder contents, use: ls -la <path> "
-            "When getting the full path of a known location, use: realpath <path> OR readlink -f <path> "
-            "Always use absolute paths in commands. Do not use <placeholder> text in the command field."
-            "Commands must be valid shell commands with no placeholder text like <folder_path>."
-            "If the exact path is unknown, first run: find / -name \'<name>\' -type d 2>/dev/null"
+            "IMPORTANT RULES: "
+            "1. Never use shell_command for internal task queues — those are handled by the gateway. "
+            "2. Always use absolute paths. Never use placeholder text like <folder_path>. "
+            "3. If the exact path is unknown, first run: find / -name 'name' -type d 2>/dev/null "
+            "4. Commands must be valid executable shell commands. "
+            "5. ALWAYS add a final verification step that tests the result (e.g. curl, ls, nginx -t). "
+            "6. If a step fails, add a fix step — do not just report the failure. "
+            "7. Keep plans SHORT: 2-4 steps max for simple tasks, 4-6 for complex ones."
         )
         user_prompt = json.dumps(
             self._build_request_payload(

@@ -34,7 +34,7 @@ from services.model_router import ModelExecutionRequest, ModelRouter, infer_prov
 
 
 MAX_TASK_TITLE_LENGTH = 80
-INLINE_CHAT_MAX_TOKENS = 220
+INLINE_CHAT_MAX_TOKENS = 400
 INTENT_CLASSIFIER_MAX_TOKENS = 32
 FOLLOWUP_CONFIRMATION_WINDOW = 6
 logger = logging.getLogger(__name__)
@@ -200,7 +200,12 @@ class AgentGatewayService:
         special_reply = self._special_chat_reply(incoming.text)
         if special_reply is not None:
             return GatewayResponse(text=special_reply)
-        reply = await self._generate_inline_chat_reply(incoming.text, history=history)
+
+        # Load relevant memories to give chat context-awareness
+        memory_context = await self._load_chat_memories(session, incoming)
+        reply = await self._generate_inline_chat_reply(
+            incoming.text, history=history, memory_context=memory_context,
+        )
         return GatewayResponse(text=reply)
 
     async def _handle_start_command(
@@ -917,7 +922,13 @@ class AgentGatewayService:
             return "chat"
         return None
 
-    async def _generate_inline_chat_reply(self, text: str, *, history: list[dict[str, str]] | None = None) -> str:
+    async def _generate_inline_chat_reply(
+        self,
+        text: str,
+        *,
+        history: list[dict[str, str]] | None = None,
+        memory_context: list[dict[str, str]] | None = None,
+    ) -> str:
         model_name = self._resolve_inline_chat_model()
         if not self._can_run_model(model_name):
             return self._fallback_chat_reply(text)
@@ -927,7 +938,9 @@ class AgentGatewayService:
                 ModelExecutionRequest(
                     agent_slug="gateway_chat_agent",
                     model=model_name,
-                    messages=self._build_inline_chat_messages(text, history=history or []),
+                    messages=self._build_inline_chat_messages(
+                        text, history=history or [], memory_context=memory_context or [],
+                    ),
                     temperature=0.3,
                     max_tokens=INLINE_CHAT_MAX_TOKENS,
                     metadata={"gateway_mode": "inline_chat"},
@@ -957,9 +970,26 @@ class AgentGatewayService:
             {"role": "user", "content": text.strip()},
         ]
 
-    def _build_inline_chat_messages(self, text: str, *, history: list[dict[str, str]]) -> list[dict[str, str]]:
+    def _build_inline_chat_messages(
+        self,
+        text: str,
+        *,
+        history: list[dict[str, str]],
+        memory_context: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
         web_access_state = "enabled" if self._settings.enable_web_research else "disabled"
         current_model = self._resolve_inline_chat_model()
+
+        # Build memory section if available
+        memory_section = ""
+        if memory_context:
+            memory_lines = [f"- [{m.get('type', '?')}] {m['content']}" for m in memory_context[:6]]
+            memory_section = (
+                "\n\nYOUR SAVED MEMORIES (facts you learned from previous tasks):\n"
+                + "\n".join(memory_lines)
+                + "\nUse these to answer questions about what you know/remember."
+            )
+
         messages: list[dict[str, str]] = [
             {
                 "role": "system",
@@ -967,17 +997,25 @@ class AgentGatewayService:
                     "You are Agent Sam — a private AI agent OS. You are the conversational chat layer.\n\n"
                     "YOUR IDENTITY (memorize this — never say GPT-4 or OpenAI):\n"
                     f"- Your name is Agent Sam. Your current LLM is: {current_model}\n"
-                    "- You are powered by DeepSeek V3 via OpenRouter, with specialist agents for different tasks.\n"
+                    "- You are powered by DeepSeek V3 via OpenRouter, with specialist agents.\n"
                     "- You are NOT ChatGPT, NOT GPT-4, NOT an OpenAI product. You are Agent Sam.\n"
                     "- When asked what model: say 'I'm Agent Sam, running on DeepSeek V3 via OpenRouter.'\n\n"
+                    "YOUR CAPABILITIES:\n"
+                    "- You DO save important details from every task to a memory database.\n"
+                    "- You have specialist agents: server_ops, coding, research, testing, planning.\n"
+                    "- You can execute shell commands, manage servers, search the web.\n"
+                    "- You save server facts, decisions, warnings, and task summaries automatically.\n"
+                    "- Your code is at: https://github.com/samlaggz/Agent-Sam\n"
+                    "- You CAN access your own code and make changes via server_ops tasks.\n\n"
                     "RULES:\n"
                     "- Be concise, warm, and helpful. Use natural language.\n"
                     "- NEVER output shell commands, code blocks, or pretend to run anything.\n"
                     "- If the user needs a server action, say: 'I'll queue that as a task for you.'\n"
-                    "- Use conversation history to provide context-aware answers.\n"
+                    "- Use conversation history AND memories to answer questions.\n"
                     f"- Web research: {web_access_state}.\n"
-                    "- If you don't know something from context, say so honestly.\n"
+                    "- If asked about saving: YES, you save important details from tasks automatically.\n"
                     "- Keep replies under 3 sentences unless the user asks for detail."
+                    f"{memory_section}"
                 ),
             },
         ]
@@ -1101,6 +1139,31 @@ class AgentGatewayService:
         )
         return any(phrase in normalized_text for phrase in followup_phrases)
 
+    async def _load_chat_memories(
+        self,
+        session: AsyncSession,
+        incoming: IncomingGatewayMessage,
+    ) -> list[dict[str, str]]:
+        """Load recent memories to give the chat layer context awareness."""
+        try:
+            from db.memory_service import MemorySearchRequest, search_memories
+
+            memories = await search_memories(
+                session,
+                MemorySearchRequest(
+                    workspace_id=incoming.workspace_id,
+                    text_query=incoming.text[:200],
+                    limit=8,
+                ),
+            )
+            return [
+                {"type": m.memory_type, "content": m.content[:200], "source": m.source}
+                for m in memories
+            ]
+        except Exception:
+            logger.debug("Failed to load chat memories", exc_info=True)
+            return []
+
     def _fallback_chat_reply(self, text: str) -> str:
         normalized_text = self._normalize_text(text)
         if "internet access" in normalized_text or "web access" in normalized_text or "online access" in normalized_text:
@@ -1138,6 +1201,14 @@ class AgentGatewayService:
         if any(phrase in normalized_text for phrase in model_phrases):
             current_model = self._resolve_inline_chat_model()
             return f"I'm Agent Sam, running on {current_model} via OpenRouter with specialist agents."
+        # Memory/saving questions — answer directly
+        saving_phrases = ("are you saving", "do you save", "do you remember", "saving everything", "saving details")
+        if any(phrase in normalized_text for phrase in saving_phrases):
+            return (
+                "Yes! I save important details from every task to my memory database — server facts, "
+                "decisions, warnings, and task summaries. I use these to give better context on future tasks. "
+                "I also have access to my own code at /opt/agent-sam and can modify it."
+            )
         if "internet access" in normalized_text or "web access" in normalized_text or "online access" in normalized_text:
             if self._settings.enable_web_research:
                 return "Yes. I have web research enabled for routed work. If you ask me to look something up, I can hand it to the research flow and send the result back."

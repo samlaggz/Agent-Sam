@@ -286,6 +286,14 @@ def _run_production_install(
     if not options.dry_run:
         ensure_env_file(env_path, example_path=example_path)
         update_env_file(env_path, env_updates, example_path=example_path, preserve_existing_values=False)
+        if not _ensure_runtime_env_file_permissions(
+            env_path,
+            command_runner=command_runner,
+            output=output,
+            dry_run=False,
+            is_root=is_root,
+        ):
+            return 1
 
     printer.step("Preparing dependency services")
     prepared_env_updates = _prepare_dependency_services(
@@ -302,6 +310,14 @@ def _run_production_install(
     env_updates = prepared_env_updates
     if not options.dry_run:
         update_env_file(env_path, env_updates, example_path=example_path, preserve_existing_values=False)
+        if not _ensure_runtime_env_file_permissions(
+            env_path,
+            command_runner=command_runner,
+            output=output,
+            dry_run=False,
+            is_root=is_root,
+        ):
+            return 1
 
     printer.step("Bootstrapping the application as agentos")
     bootstrap_command = _command_as_user(
@@ -1125,6 +1141,24 @@ def _run_with_output(
             output(result.stderr.strip())
         output(f"Command failed: {format_command(command)}")
     return result
+
+
+def _ensure_runtime_env_file_permissions(
+    env_path: Path,
+    *,
+    command_runner: CommandRunner,
+    output: OutputFunc,
+    dry_run: bool,
+    is_root: bool,
+) -> bool:
+    rendered_env_path = env_path.as_posix()
+    for command in (
+        _privileged_command(["chown", f"{APP_USER}:{APP_USER}", rendered_env_path], is_root=is_root),
+        _privileged_command(["chmod", "600", rendered_env_path], is_root=is_root),
+    ):
+        if _run_with_output(command, command_runner=command_runner, output=output, dry_run=dry_run).returncode != 0:
+            return False
+    return True
 
 
 def _privileged_prefix(is_root: bool) -> tuple[str, ...]:

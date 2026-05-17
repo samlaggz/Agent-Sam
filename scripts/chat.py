@@ -25,6 +25,13 @@ try:
 except ImportError:
     pass
 
+# Suppress noisy LiteLLM warnings in the chat terminal
+import logging as _logging
+_logging.getLogger("LiteLLM").setLevel(_logging.ERROR)
+_logging.getLogger("litellm").setLevel(_logging.ERROR)
+_logging.getLogger("httpx").setLevel(_logging.WARNING)
+_logging.getLogger("httpcore").setLevel(_logging.WARNING)
+
 _BANNER = r"""
   ___                     _     ____
  / _ \   __ _   ___  _ __| |_  / ___|  __ _  _ __ ___

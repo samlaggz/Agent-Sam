@@ -19,6 +19,7 @@ from app.config import Settings
 from db.memory_service import MemoryCreateRequest, save_memory
 from db.models import Approval, Memory, Task, TaskStep, ToolCall, User, Workspace
 from db.repositories import create_task
+from tools.web_research import WebSource
 
 
 pytestmark = pytest.mark.asyncio
@@ -58,6 +59,21 @@ class FakeProgressReporter:
         self.messages.append({"task_id": task_id, "text": text, "stage": stage})
 
 
+class FakeWebResearchProvider:
+    async def search(self, query: str, *, max_results: int = 5) -> tuple[WebSource, ...]:
+        del max_results
+        return (
+            WebSource(
+                title="LiteLLM docs",
+                url="https://docs.litellm.ai/",
+                snippet=f"Found web result for {query}",
+            ),
+        )
+
+    async def open(self, url: str) -> str:
+        return f"Opened {url}"
+
+
 @pytest_asyncio.fixture
 async def agent_task(session: AsyncSession, workspace: Workspace, user: User) -> Task:
     return await create_task(
@@ -82,14 +98,17 @@ def build_agent_runner(
     progress_reporter: FakeProgressReporter,
     skills_root: Path,
     allowed_tool_roots: list[str | Path],
+    settings: Settings | None = None,
+    web_research_provider=None,
 ) -> AgentGraphRunner:
     return AgentGraphRunner(
         session_factory,
-        settings=Settings(litellm_model="test-model"),
+        settings=settings or Settings(_env_file=None, litellm_model="test-model"),
         planning_model=planning_model,
         progress_reporter=progress_reporter,
         skills_root=skills_root,
         allowed_tool_roots=allowed_tool_roots,
+        web_research_provider=web_research_provider,
     )
 
 
@@ -329,3 +348,61 @@ async def test_agent_runtime_pauses_for_approval_and_resumes_after_review(
     assert "agent-approved-run" in (tool_calls[0].output_text or "")
     assert any("requires approval" in message["text"].lower() for message in progress_reporter.messages)
     assert any(message["stage"] == "report_result" for message in progress_reporter.messages)
+
+
+async def test_agent_runtime_executes_web_search_when_enabled(
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_task: Task,
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    (skills_root / "research.yaml").write_text(
+        build_skill_yaml(
+            "research",
+            "Use web research when the task requires current public information.",
+            tools_allowed=["web_search"],
+        ),
+        encoding="utf-8",
+    )
+
+    planning_model = FakePlanningModel(
+        [
+            PlannedStep(
+                title="Search the web",
+                description="Look up the latest LiteLLM documentation.",
+                tool_name="web_search",
+                command="latest LiteLLM documentation",
+                reason="Need current public information.",
+            )
+        ]
+    )
+    progress_reporter = FakeProgressReporter()
+    runner = build_agent_runner(
+        session_factory,
+        planning_model=planning_model,
+        progress_reporter=progress_reporter,
+        skills_root=skills_root,
+        allowed_tool_roots=[tmp_path],
+        settings=Settings(_env_file=None, litellm_model="test-model", enable_web_research=True),
+        web_research_provider=FakeWebResearchProvider(),
+    )
+
+    result = await runner.run_task(agent_task.id)
+
+    assert result.status == "completed"
+
+    async with session_factory() as verification_session:
+        tool_calls = list(
+            (
+                await verification_session.execute(
+                    select(ToolCall)
+                    .where(ToolCall.task_id == agent_task.id)
+                    .order_by(ToolCall.created_at.asc())
+                )
+            ).scalars()
+        )
+
+    assert len(tool_calls) == 1
+    assert tool_calls[0].tool_name == "web_search"
+    assert "LiteLLM docs" in (tool_calls[0].output_text or "")

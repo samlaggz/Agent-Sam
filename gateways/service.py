@@ -37,7 +37,7 @@ INTENT_CLASSIFIER_MAX_TOKENS = 32
 logger = logging.getLogger(__name__)
 
 _TASK_ACTION_PATTERN = re.compile(
-    r"\b(add|analy[sz]e|audit|build|change|check|create|debug|deploy|design|fix|implement|improve|install|investigate|make|migrate|optimi[sz]e|refactor|remove|repair|replace|review|run|search|set up|setup|ship|test|trace|triage|update|upgrade|write)\b"
+    r"\b(add|analy[sz]e|audit|browse|build|change|check|create|debug|deploy|design|find|fix|implement|improve|install|investigate|look up|lookup|make|migrate|optimi[sz]e|refactor|remove|repair|replace|review|run|search|set up|setup|ship|test|trace|triage|update|upgrade|verify|write)\b"
 )
 _TASK_REQUEST_PREFIX_PATTERN = re.compile(
     r"^(please|can you|could you|would you|i need you to|need you to|help me|try to|let'?s)\b"
@@ -56,11 +56,13 @@ _TASK_STARTERS = {
     "debug",
     "deploy",
     "design",
+    "find",
     "fix",
     "implement",
     "improve",
     "install",
     "investigate",
+    "lookup",
     "make",
     "migrate",
     "optimize",
@@ -161,7 +163,8 @@ class AgentGatewayService:
         if intent == "chat":
             return await self._handle_chat_message(session, message, incoming)
         task = await self._create_task_from_text(session, incoming, message)
-        return GatewayResponse(text=self._format_task_confirmation(task), task_id=task.id)
+        route_preview = self._route_task_preview(task.title, task.description or "")
+        return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
 
     async def _handle_chat_message(
         self,
@@ -170,6 +173,9 @@ class AgentGatewayService:
         incoming: IncomingGatewayMessage,
     ) -> GatewayResponse:
         del session, message
+        special_reply = self._special_chat_reply(incoming.text)
+        if special_reply is not None:
+            return GatewayResponse(text=special_reply)
         reply = await self._generate_inline_chat_reply(incoming.text)
         return GatewayResponse(text=reply)
 
@@ -205,7 +211,8 @@ class AgentGatewayService:
 
         task_text = " ".join(arguments).strip()
         task = await self._create_task_from_text(session, incoming, message, task_text=task_text)
-        return GatewayResponse(text=self._format_task_confirmation(task), task_id=task.id)
+        route_preview = self._route_task_preview(task.title, task.description or "")
+        return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
 
     async def _handle_status_command(
         self,
@@ -626,6 +633,9 @@ class AgentGatewayService:
             description=normalized_text,
             created_by_user_id=incoming.user_id,
             metadata_json={
+                "source": incoming.gateway_name,
+                "source_chat_id": incoming.gateway_chat.gateway_chat_id,
+                "source_user_id": incoming.gateway_user.gateway_user_id,
                 "gateway_name": incoming.gateway_name,
                 "gateway_message_id": incoming.gateway_message_id,
                 "gateway_chat_id": incoming.gateway_chat.gateway_chat_id,
@@ -689,14 +699,22 @@ class AgentGatewayService:
             return first_line
         return f"{first_line[: MAX_TASK_TITLE_LENGTH - 3].rstrip()}..."
 
-    def _format_task_confirmation(self, task: Task) -> str:
-        return (
+    def _format_task_confirmation(self, task: Task, *, route_preview=None) -> str:
+        message = (
             "Task created.\n"
             f"ID: {task.id}\n"
             f"Title: {task.title}\n"
             f"Priority: {task.priority}\n"
             f"Status: {task.status}"
         )
+        if route_preview is not None:
+            message += (
+                "\n"
+                f"Planned agent: {route_preview.agent_slug}\n"
+                f"Model: {route_preview.model}\n"
+                f"Reason: {route_preview.reason}"
+            )
+        return message
 
     def _format_task_status(self, task: Task, subtask_count: int) -> str:
         assigned_worker = task.assigned_worker or "unassigned"
@@ -874,6 +892,7 @@ class AgentGatewayService:
         ]
 
     def _build_inline_chat_messages(self, text: str) -> list[dict[str, str]]:
+        web_access_state = "enabled" if self._settings.enable_web_research else "disabled"
         return [
             {
                 "role": "system",
@@ -881,7 +900,9 @@ class AgentGatewayService:
                     "You are Agent Sam in an interactive gateway chat. Reply directly and concisely. "
                     "Do not claim that background work, file edits, or task execution already happened unless the user explicitly saw that happen. "
                     "This gateway chats inline for normal conversation and creates tracked tasks only for explicit work requests. "
-                    "If asked what this interface is, explain that it is the Agent Sam chat gateway and mention /new for explicit task creation."
+                    "If asked what this interface is, explain that it is the Agent Sam chat gateway and mention /new for explicit task creation. "
+                    f"Web research is currently {web_access_state}. "
+                    "If asked whether you have internet or web access, answer based on that setting and explain that internet lookups are routed as tracked work when needed."
                 ),
             },
             {"role": "user", "content": text.strip()},
@@ -949,6 +970,10 @@ class AgentGatewayService:
 
     def _fallback_chat_reply(self, text: str) -> str:
         normalized_text = self._normalize_text(text)
+        if "internet access" in normalized_text or "web access" in normalized_text or "online access" in normalized_text:
+            if self._settings.enable_web_research:
+                return "Yes. Web research is enabled. Ask me to look something up and I will route it as tracked work to the right specialist."
+            return "Not right now. Web research is disabled in the current runtime configuration."
         if _CHAT_GREETING_PATTERN.match(normalized_text):
             return "Hi. I can chat here for quick questions, and I create tracked tasks only when you ask me to do work or use /new."
         if normalized_text.startswith(("what is this", "what's this", "what does this")):
@@ -961,6 +986,23 @@ class AgentGatewayService:
                 "I can answer quick questions here. If you want tracked work queued for the worker, ask me to do something explicitly or use /new <task description>."
             )
         return "I can chat here and I can queue work. Use /new <task description> when you want a tracked task."
+
+    def _route_task_preview(self, title: str, description: str):
+        return self._router_agent.route(
+            RouteRequest(
+                title=title,
+                description=description,
+                metadata={"source": "gateway", "enable_web_research": self._settings.enable_web_research},
+            )
+        )
+
+    def _special_chat_reply(self, text: str) -> str | None:
+        normalized_text = self._normalize_text(text)
+        if "internet access" in normalized_text or "web access" in normalized_text or "online access" in normalized_text:
+            if self._settings.enable_web_research:
+                return "Yes. I have web research enabled for routed work. If you ask me to look something up, I can hand it to the research flow and send the result back."
+            return "No. Web research is currently disabled in this deployment."
+        return None
 
     def _parse_json_object(self, text: str) -> dict[str, Any] | None:
         cleaned = text.strip()

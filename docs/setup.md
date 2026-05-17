@@ -52,6 +52,8 @@ The wizard now also asks for:
 - `ALLOW_SUB_AGENT_AUTO_CREATION`
 - `ENABLE_WEB_RESEARCH`
 
+When `ENABLE_WEB_RESEARCH=true`, the runtime can register live `web_search` and `web_open` tools for research-oriented tasks. Keep it disabled if you want the agent to avoid public internet access entirely.
+
 ## CLI-only mode
 
 CLI-only mode enables the `cli` gateway and checks for seeded IDs. If the database is not ready, it prints the exact recovery command:

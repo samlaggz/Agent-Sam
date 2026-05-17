@@ -15,12 +15,14 @@ from agent.model_client import PlannedStep, PlanningModel
 from agent.progress import ProgressReporter
 from agent.skills import SkillContext, load_skill_context
 from agent.state import AgentState, PlanStepState, TaskSnapshot
+from app.config import Settings
 from db.memory_service import MemoryCreateRequest, ContextMemory, build_task_context, save_memory
 from db.models import Approval, Task, TaskRun, TaskStep, ToolCall
 from db.repositories import log_tool_call
 from tools.registry import build_runtime_tool_registry, get_tool_registry
 from tools.safe_tools import SafeTool
 from tools.shell_command import ShellCommandRequest, ShellCommandResult, ShellCommandTool
+from tools.web_research import WebResearchProvider, WebResearchTool
 
 
 @dataclass(frozen=True)
@@ -36,10 +38,12 @@ class AgentNodeHandlers:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
+        settings: Settings,
         planning_model: PlanningModel,
         progress_reporter: ProgressReporter,
         skills_root: Path,
         allowed_tool_roots: Sequence[str | Path] | None = None,
+        web_research_provider: WebResearchProvider | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._planning_model = planning_model
@@ -48,9 +52,12 @@ class AgentNodeHandlers:
         self._safe_tool_registry = get_tool_registry()
         self._runtime_tool_registry = build_runtime_tool_registry(
             session_factory,
+            settings=settings,
             allowed_roots=allowed_tool_roots,
+            web_research_provider=web_research_provider,
         )
         self._shell_command_tool = cast(ShellCommandTool, self._runtime_tool_registry["shell_command"])
+        self._web_research_tool = cast(WebResearchTool | None, self._runtime_tool_registry.get("web_search"))
         roots = list(allowed_tool_roots or [Path.cwd()])
         self._default_working_directory = Path(roots[0]).resolve()
 
@@ -369,6 +376,12 @@ class AgentNodeHandlers:
         if tool_name == "shell_command":
             return await self._execute_shell_command_step(task_snapshot, step)
 
+        if tool_name == "web_search":
+            return await self._execute_web_search_step(task_snapshot, step)
+
+        if tool_name == "web_open":
+            return await self._execute_web_open_step(task_snapshot, step)
+
         safe_tool = self._safe_tool_registry.get(tool_name)
         if safe_tool is None:
             return StepExecutionOutcome(
@@ -427,6 +440,62 @@ class AgentNodeHandlers:
             status=status,
             summary=summary,
             tool_call_id=tool_call.id,
+        )
+
+    async def _execute_web_search_step(self, task_snapshot: TaskSnapshot, step: PlanStepState) -> StepExecutionOutcome:
+        if self._web_research_tool is None:
+            return StepExecutionOutcome(
+                status="failed",
+                summary=f"Step {step['position']} failed: web_search is unavailable because web research is not enabled.",
+            )
+
+        query = (step.get("command") or step.get("reason") or step.get("description") or step["title"]).strip()
+        if not query:
+            return StepExecutionOutcome(
+                status="failed",
+                summary=f"Step {step['position']} failed: web_search requires a query string.",
+            )
+
+        try:
+            result = await self._web_research_tool.search(task_id=UUID(task_snapshot["id"]), task_run_id=None, query=query)
+        except Exception as exc:
+            return StepExecutionOutcome(
+                status="failed",
+                summary=f"Step {step['position']} failed while running web_search: {exc}",
+            )
+
+        return StepExecutionOutcome(
+            status="completed",
+            summary=f"Step {step['position']} completed with web_search. {self._excerpt(result.summary)}",
+            tool_call_id=result.tool_call_id,
+        )
+
+    async def _execute_web_open_step(self, task_snapshot: TaskSnapshot, step: PlanStepState) -> StepExecutionOutcome:
+        if self._web_research_tool is None:
+            return StepExecutionOutcome(
+                status="failed",
+                summary=f"Step {step['position']} failed: web_open is unavailable because web research is not enabled.",
+            )
+
+        url = (step.get("command") or "").strip()
+        if not url:
+            return StepExecutionOutcome(
+                status="failed",
+                summary=f"Step {step['position']} failed: web_open requires a URL in command.",
+            )
+
+        try:
+            result = await self._web_research_tool.open(task_id=UUID(task_snapshot["id"]), task_run_id=None, url=url)
+        except Exception as exc:
+            return StepExecutionOutcome(
+                status="failed",
+                summary=f"Step {step['position']} failed while running web_open: {exc}",
+            )
+
+        return StepExecutionOutcome(
+            status="completed",
+            summary=f"Step {step['position']} completed with web_open. Output: {self._excerpt(result.content)}",
+            tool_call_id=result.tool_call_id,
         )
 
     async def _execute_shell_command_step(self, task_snapshot: TaskSnapshot, step: PlanStepState) -> StepExecutionOutcome:

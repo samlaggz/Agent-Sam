@@ -13,6 +13,7 @@ from agent.nodes import AgentNodeHandlers
 from agent.progress import ProgressReporter, TaskProgressReporter
 from agent.state import AgentState
 from app.config import Settings, get_settings
+from tools.web_research import WebResearchProvider
 
 
 @dataclass(frozen=True)
@@ -56,15 +57,18 @@ class AgentGraphRunner:
         progress_reporter: ProgressReporter | None = None,
         skills_root: str | Path | None = None,
         allowed_tool_roots: Sequence[str | Path] | None = None,
+        web_research_provider: WebResearchProvider | None = None,
     ) -> None:
         model = planning_model or LiteLLMPlanningModel(settings, session_factory)
         reporter = progress_reporter or TaskProgressReporter(session_factory, settings)
         handlers = AgentNodeHandlers(
             session_factory,
+            settings=settings,
             planning_model=model,
             progress_reporter=reporter,
             skills_root=Path(skills_root or Path.cwd() / "skills"),
             allowed_tool_roots=allowed_tool_roots,
+            web_research_provider=web_research_provider,
         )
         self._graph = build_agent_graph(handlers)
 

@@ -104,11 +104,22 @@ class LiteLLMPlanningModel:
         skill_context: list[dict[str, Any]],
     ) -> list[dict[str, str]]:
         profile_prompt = self._load_profile_prompt()
+        tool_names = self._available_tool_names()
+        tool_list = ", ".join(tool_names)
+        tool_instructions = [f"Only use these tool names when needed: {tool_list}."]
+        if "web_search" in tool_names:
+            tool_instructions.append("For web_search, put the search query in the command field.")
+        if "web_open" in tool_names:
+            tool_instructions.append("For web_open, put the target URL in the command field.")
+        if "shell_command" in tool_names:
+            tool_instructions.append(
+                "Use shell_command only when another tool cannot solve the task and only if policy allows it."
+            )
         system_prompt = (
             f"{profile_prompt}\n\n"
             "Create a simple step-by-step plan for the task. "
-            "Only use these tool names when needed: utc_now, health_snapshot, shell_command. "
-            "Use shell_command only when another tool cannot solve the task and only if policy allows it. "
+            + " ".join(tool_instructions)
+            + " "
             "Return strict JSON with a top-level 'steps' array. "
             "Each step must include: title, description, tool_name, command, reason. "
             "Use null for tool_name and command when the step is reasoning-only. "
@@ -132,6 +143,30 @@ class LiteLLMPlanningModel:
         if self._profile is None:
             return "You are the planning component for a private AI agent operating system."
         return Path(self._profile.system_prompt_path).read_text(encoding="utf-8").strip()
+
+    def _available_tool_names(self) -> tuple[str, ...]:
+        if self._profile is None:
+            return ("utc_now", "health_snapshot", "shell_command")
+
+        tool_names: list[str] = ["utc_now", "health_snapshot"]
+        if any(
+            tool_name in self._profile.tools_allowed
+            for tool_name in ("safe_shell", "service_control", "file_read", "file_write", "grep", "pytest")
+        ):
+            tool_names.append("shell_command")
+        if self._settings.enable_web_research and "web_search" in self._profile.tools_allowed:
+            tool_names.append("web_search")
+        if self._settings.enable_web_research and "web_open" in self._profile.tools_allowed:
+            tool_names.append("web_open")
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for tool_name in tool_names:
+            if tool_name in seen:
+                continue
+            normalized.append(tool_name)
+            seen.add(tool_name)
+        return tuple(normalized)
 
     def _build_request_payload(
         self,

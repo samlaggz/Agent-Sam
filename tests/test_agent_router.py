@@ -43,3 +43,16 @@ def test_router_selects_research_agent_for_latest_docs_task() -> None:
 
     assert decision.agent_slug == "research_agent"
     assert decision.estimated_cost_level in {"low", "medium", "high"}
+
+
+def test_router_selects_research_agent_for_internet_lookup_task() -> None:
+    router = RouterAgent()
+
+    decision = router.route(
+        RouteRequest(
+            title="Check the internet for the latest agent framework updates",
+            description="Browse online sources and summarize what changed",
+        )
+    )
+
+    assert decision.agent_slug == "research_agent"

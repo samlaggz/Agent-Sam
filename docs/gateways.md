@@ -72,6 +72,8 @@ python -m gateways.telegram.main
 
 The CLI gateway accepts the same commands as Telegram and exits with `/exit`.
 
+When `ENABLE_WEB_RESEARCH=true`, actionable requests that require current public information can be routed into tracked research tasks that use `web_search` and `web_open`. Simple conversation still stays inline.
+
 ## Supported commands
 
 All implemented gateways share the same command surface:
@@ -89,7 +91,7 @@ All implemented gateways share the same command surface:
 /cancel <task_id>
 ```
 
-Normal conversation gets an inline reply through the shared service. Explicit work requests still create tracked tasks, and `/new` always creates a task.
+Normal conversation gets an inline reply through the shared service. Explicit work requests create tracked tasks, include a route preview, and `/new` always creates a task.
 
 ## Webhook contract
 

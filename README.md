@@ -142,6 +142,8 @@ Common runtime commands from the CLI or Telegram gateway:
 
 Normal conversation gets an inline reply. Use `/new <task description>` or an explicit work request when you want a tracked task.
 
+If `ENABLE_WEB_RESEARCH=true`, requests such as checking the internet, finding the latest docs, or browsing public sources are routed as tracked research work instead of answered with a shallow inline guess.
+
 - `/agents`
 - `/agent <slug>`
 - `/route <task_id>`

@@ -128,6 +128,24 @@ async def test_handle_text_message_returns_inline_chat_reply_without_creating_ta
         assert task_count == 0
 
 
+async def test_handle_text_message_reports_web_access_when_enabled(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True, openrouter_api_key=""),
+    )
+
+    response = await service.handle_incoming_message(build_incoming_message(workspace, user, "do you have internet access"))
+
+    assert response.task_id is None
+    assert "Yes. I have web research enabled" in response.text
+
+
 async def test_handle_text_message_uses_fallback_chat_reply_when_no_model_is_available(
     session_factory: async_sessionmaker[AsyncSession],
     workspace: Workspace,
@@ -166,6 +184,38 @@ async def test_handle_text_message_creates_task_for_explicit_work_request_questi
 
     assert response.task_id is not None
     assert "Task created." in response.text
+    assert "Planned agent: server_ops_agent" in response.text
+
+
+async def test_handle_text_message_creates_research_task_and_sets_telegram_progress_metadata(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, enable_web_research=True),
+    )
+    incoming = build_incoming_message(
+        workspace,
+        user,
+        "Can you check on the internet for the latest LiteLLM docs?",
+        gateway_name="telegram",
+    )
+
+    response = await service.handle_incoming_message(incoming)
+
+    assert response.task_id is not None
+    assert "Planned agent: research_agent" in response.text
+
+    async with session_factory() as session:
+        task = await session.get(Task, response.task_id)
+        assert task is not None
+        assert task.metadata_json["source"] == "telegram"
+        assert task.metadata_json["source_chat_id"] == "telegram-chat-1"
+        assert task.metadata_json["source_user_id"] == "telegram-user-1"
 
 
 async def test_handle_new_queue_and_status_commands(

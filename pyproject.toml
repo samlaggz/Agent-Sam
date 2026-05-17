@@ -27,8 +27,11 @@ dependencies = [
 packages = [
   "app",
   "agent",
+  "agents",
   "db",
   "gateways",
+  "scripts",
+  "services",
   "workers",
   "tools"
 ]
@@ -43,6 +46,7 @@ dev = [
 ]
 
 [project.scripts]
+agent-sam = "scripts.cli:run"
 agent-sam-api = "app.main:run"
 agent-sam-doctor = "scripts.doctor:run"
 agent-sam-gateways = "gateways.runner:run"

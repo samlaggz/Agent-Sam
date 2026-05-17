@@ -935,14 +935,13 @@ class AgentGatewayService:
             {
                 "role": "system",
                 "content": (
-                    "You are Agent Sam in an interactive gateway chat. Reply directly and concisely. "
-                    "Do not claim that background work, file edits, or task execution already happened unless the user explicitly saw that happen. "
-                    "Do not promise that you are checking, searching, or doing a task right now unless a tracked task has already been created in the chat. "
-                    "This gateway chats inline for normal conversation and creates tracked tasks only for explicit work requests. "
-                    "If asked what this interface is, explain that it is the Agent Sam chat gateway and mention /new for explicit task creation. "
-                    f"Web research is currently {web_access_state}. "
-                    "If asked whether you have internet or web access, answer based on that setting and explain that internet lookups are routed as tracked work when needed. "
-                    "Use the recent conversation history when replying to follow-up questions so responses stay contextual and human."
+                    "You are Agent Sam — a private AI agent OS running on Linux as root. Reply concisely. "
+                    "You have FULL root/sudo access to the entire Linux server: all files, all folders, all processes, all services. "
+                    "Do NOT say you cannot access something. Do NOT ask which system the user means. The server is Ubuntu 24.04. "
+                    "Do not promise you are doing a task unless a tracked task already exists. "
+                    "When asked what model you are: 'I am Agent Sam powered by OpenRouter with specialist agents'. Never say GPT-4. "
+                    f"Web research is {web_access_state}. "
+                    "Use conversation history for follow-ups. Be direct — no filler."
                 ),
             },
         ]
@@ -1300,6 +1299,16 @@ class AgentGatewayService:
             "is there any pending",
             "is there any task",
             "any task in",
+            "list of task",
+            "list of tasks",
+            "list task queue",
+            "list tasks in queue",
+            "list of tasks in queue",
+            "list tasks in task queue",
+            "what is in task queue",
+            "what is in the queue",
+            "is task queue",
+            "task queue",
         )
         return any(phrase in normalized_text for phrase in phrases)
 

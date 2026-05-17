@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     webhook_gateway_secret: str = ""
     default_workspace_id: UUID | None = None
     default_user_id: UUID | None = None
-    default_model: str = "openrouter/openai/gpt-4.1-mini"
+    default_model: str = "openrouter/anthropic/claude-3.5-haiku"
     litellm_model: str = "gpt-4.1-mini"
     litellm_api_key: str = ""
     openrouter_api_key: str = ""

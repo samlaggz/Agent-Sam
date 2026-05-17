@@ -190,17 +190,17 @@ class WebResearchTool:
     ) -> UUID:
         async with self._session_factory() as session:
             tool_call = ToolCall(
-                    task_id=task_id,
-                    task_run_id=task_run_id,
-                    tool_name=tool_name,
-                    input_payload=json.loads(json.dumps(input_payload)),
-                    output_text=output_text,
-                    stderr_text=None,
-                    duration_ms=duration_ms,
-                    status="completed",
-                    risk_level="safe",
-                    approved_by_user=False,
-                )
+                task_id=task_id,
+                task_run_id=task_run_id,
+                tool_name=tool_name,
+                input_payload=json.loads(json.dumps(input_payload)),
+                output_text=output_text,
+                stderr_text=None,
+                duration_ms=duration_ms,
+                status="completed",
+                risk_level="safe",
+                approved_by_user=False,
+            )
             session.add(tool_call)
             await session.commit()
             await session.refresh(tool_call)

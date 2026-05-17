@@ -125,6 +125,11 @@ SAFE_RULES = [
         reason="Read-only inspection command is safe.",
     ),
     RiskRule(
+        name="process-inspection",
+        pattern=r"^(ps\s+aux(\s*\|\s*grep\b.*)?|pgrep\b.*|Get-Process\b.*|tasklist\b.*|ps\s+-ef(\s*\|\s*grep\b.*)?)$",
+        reason="Read-only process inspection is safe.",
+    ),
+    RiskRule(
         name="python-version",
         pattern=r"^(python|python3|py)\s+--version\b",
         reason="Checking the Python version is safe.",

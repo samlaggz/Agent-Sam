@@ -56,3 +56,16 @@ def test_router_selects_research_agent_for_internet_lookup_task() -> None:
     )
 
     assert decision.agent_slug == "research_agent"
+
+
+def test_router_selects_server_ops_agent_for_find_on_server_task() -> None:
+    router = RouterAgent()
+
+    decision = router.route(
+        RouteRequest(
+            title="Find shivadrive in server",
+            description="Search the server filesystem and running processes for shivadrive",
+        )
+    )
+
+    assert decision.agent_slug == "server_ops_agent"

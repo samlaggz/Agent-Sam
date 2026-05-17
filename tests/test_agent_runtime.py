@@ -406,3 +406,67 @@ async def test_agent_runtime_executes_web_search_when_enabled(
     assert len(tool_calls) == 1
     assert tool_calls[0].tool_name == "web_search"
     assert "LiteLLM docs" in (tool_calls[0].output_text or "")
+
+
+async def test_agent_runtime_web_open_falls_back_to_recent_search_url(
+    session_factory: async_sessionmaker[AsyncSession],
+    agent_task: Task,
+    tmp_path: Path,
+) -> None:
+    skills_root = tmp_path / "skills"
+    skills_root.mkdir()
+    (skills_root / "research.yaml").write_text(
+        build_skill_yaml(
+            "research",
+            "Open a relevant result after performing web research.",
+            tools_allowed=["web_search", "web_open"],
+        ),
+        encoding="utf-8",
+    )
+
+    planning_model = FakePlanningModel(
+        [
+            PlannedStep(
+                title="Search the web",
+                description="Look up the latest LiteLLM documentation.",
+                tool_name="web_search",
+                command="latest LiteLLM documentation",
+                reason="Need current public information.",
+            ),
+            PlannedStep(
+                title="Open the best result",
+                description="Open the most relevant source from the recent search results.",
+                tool_name="web_open",
+                command="",
+                reason="Inspect the primary result in more detail.",
+            ),
+        ]
+    )
+    progress_reporter = FakeProgressReporter()
+    runner = build_agent_runner(
+        session_factory,
+        planning_model=planning_model,
+        progress_reporter=progress_reporter,
+        skills_root=skills_root,
+        allowed_tool_roots=[tmp_path],
+        settings=Settings(_env_file=None, litellm_model="test-model", enable_web_research=True),
+        web_research_provider=FakeWebResearchProvider(),
+    )
+
+    result = await runner.run_task(agent_task.id)
+
+    assert result.status == "completed"
+
+    async with session_factory() as verification_session:
+        tool_calls = list(
+            (
+                await verification_session.execute(
+                    select(ToolCall)
+                    .where(ToolCall.task_id == agent_task.id)
+                    .order_by(ToolCall.created_at.asc())
+                )
+            ).scalars()
+        )
+
+    assert [tool_call.tool_name for tool_call in tool_calls] == ["web_search", "web_open"]
+    assert "Opened https://docs.litellm.ai/" in (tool_calls[1].output_text or "")

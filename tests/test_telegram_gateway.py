@@ -21,6 +21,18 @@ class FakeGatewayService:
         return GatewayResponse(text=f"echo:{incoming.text}")
 
 
+class FakeApprovalGatewayService:
+    def __init__(self) -> None:
+        self.received_texts: list[str] = []
+
+    async def handle_incoming_message(self, incoming) -> GatewayResponse:
+        self.received_texts.append(incoming.text)
+        if incoming.text.startswith("/approve "):
+            approval_id = incoming.text.split(" ", 1)[1]
+            return GatewayResponse(text=f"Approval {approval_id} marked as approved.", approval_id=uuid4(), metadata={"approval_id": approval_id})
+        return GatewayResponse(text="Needs approval.", approval_id=uuid4(), metadata={"approval_id": "approval-123"})
+
+
 def build_settings(**overrides: object) -> Settings:
     defaults: dict[str, object] = {
         "enabled_gateways": ("telegram",),
@@ -189,3 +201,73 @@ def test_telegram_shutdown_noise_filter_drops_known_cancelled_error_message() ->
     )
 
     assert TelegramShutdownNoiseFilter().filter(record) is False
+
+
+async def test_telegram_gateway_builds_approval_button_markup() -> None:
+    gateway = TelegramGateway(
+        service=FakeGatewayService(),  # type: ignore[arg-type]
+        token="123456:ABCDEF_test_token",
+        workspace_id=uuid4(),
+        user_id=uuid4(),
+    )
+
+    markup = gateway._build_reply_markup(GatewayResponse(text="Approve this", metadata={"approval_id": "approval-123"}))
+
+    assert markup is not None
+    assert markup.inline_keyboard[0][0].callback_data == "approve:approval-123"
+
+
+async def test_telegram_gateway_callback_query_sends_approve_command() -> None:
+    service = FakeApprovalGatewayService()
+    gateway = TelegramGateway(
+        service=service,  # type: ignore[arg-type]
+        token="123456:ABCDEF_test_token",
+        workspace_id=uuid4(),
+        user_id=uuid4(),
+    )
+
+    class FakeMessage:
+        def __init__(self) -> None:
+            self.message_id = 77
+            self.replies: list[str] = []
+
+        async def reply_text(self, text: str, reply_markup=None) -> None:
+            del reply_markup
+            self.replies.append(text)
+
+    class FakeCallbackQuery:
+        def __init__(self) -> None:
+            self.data = "approve:approval-123"
+            self.message = FakeMessage()
+            self.answered: list[str] = []
+
+        async def answer(self, text: str, show_alert: bool = False) -> None:
+            del show_alert
+            self.answered.append(text)
+
+        async def edit_message_reply_markup(self, reply_markup=None) -> None:
+            del reply_markup
+
+    class FakeUser:
+        id = 999
+        username = "tester"
+        full_name = "Telegram Tester"
+
+    class FakeChat:
+        id = 555
+        title = "Test Chat"
+        type = "private"
+
+    class FakeUpdate:
+        def __init__(self) -> None:
+            self.callback_query = FakeCallbackQuery()
+            self.effective_chat = FakeChat()
+            self.effective_user = FakeUser()
+
+    update = FakeUpdate()
+
+    await gateway._handle_callback_query(update, None)  # type: ignore[arg-type]
+
+    assert service.received_texts == ["/approve approval-123"]
+    assert update.callback_query.answered == ["Approved"]
+    assert update.callback_query.message.replies

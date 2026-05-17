@@ -189,3 +189,23 @@ async def test_timeout_is_captured_and_logged(
     assert execution_result.status == "timed_out"
     assert execution_result.duration_ms is not None
     assert "timed out" in execution_result.stderr.lower()
+
+
+async def test_process_inspection_with_grep_is_safe(
+    session_factory: async_sessionmaker[AsyncSession],
+    task: Task,
+    tmp_path,
+) -> None:
+    tool = ShellCommandTool(session_factory, allowed_roots=[tmp_path])
+
+    result = await tool.submit_command(
+        ShellCommandRequest(
+            command="ps aux | grep -i shivadrive | grep -v grep",
+            working_directory=str(tmp_path),
+            reason="Inspect running processes for shivadrive.",
+            task_id=task.id,
+        )
+    )
+
+    assert result.requires_approval is False
+    assert result.status in {"completed", "failed"}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -478,6 +479,10 @@ class AgentNodeHandlers:
             )
 
         url = (step.get("command") or "").strip()
+        if not self._looks_like_http_url(url):
+            fallback_url = await self._resolve_recent_web_search_url(task_snapshot)
+            if fallback_url is not None:
+                url = fallback_url
         if not url:
             return StepExecutionOutcome(
                 status="failed",
@@ -497,6 +502,38 @@ class AgentNodeHandlers:
             summary=f"Step {step['position']} completed with web_open. Output: {self._excerpt(result.content)}",
             tool_call_id=result.tool_call_id,
         )
+
+    async def _resolve_recent_web_search_url(self, task_snapshot: TaskSnapshot) -> str | None:
+        task_id = UUID(task_snapshot["id"])
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(ToolCall)
+                .where(ToolCall.task_id == task_id, ToolCall.tool_name == "web_search")
+                .order_by(ToolCall.created_at.desc())
+                .limit(1)
+            )
+            tool_call = result.scalar_one_or_none()
+            if tool_call is None:
+                return None
+
+            input_payload = tool_call.input_payload if isinstance(tool_call.input_payload, dict) else {}
+            sources = input_payload.get("sources")
+            if isinstance(sources, list):
+                for source in sources:
+                    if isinstance(source, dict):
+                        url = str(source.get("url") or "").strip()
+                        if self._looks_like_http_url(url):
+                            return url
+
+            output_text = tool_call.output_text or ""
+            match = re.search(r"https?://\S+", output_text)
+            if match:
+                return match.group(0).rstrip(")].,;")
+        return None
+
+    def _looks_like_http_url(self, value: str) -> bool:
+        lowered = value.strip().lower()
+        return lowered.startswith("http://") or lowered.startswith("https://")
 
     async def _execute_shell_command_step(self, task_snapshot: TaskSnapshot, step: PlanStepState) -> StepExecutionOutcome:
         existing_tool_call_id = self._optional_uuid(step.get("tool_call_id"))

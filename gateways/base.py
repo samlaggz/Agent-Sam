@@ -65,6 +65,7 @@ class GatewayResponse:
     task_id: UUID | None = None
     approval_id: UUID | None = None
     should_reply: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

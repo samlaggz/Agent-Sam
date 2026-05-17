@@ -386,6 +386,7 @@ class AgentGatewayService:
             text=f"Approval {approval.id} marked as approved.",
             task_id=approval.task_id,
             approval_id=approval.id,
+            metadata={"approval_id": str(approval.id), "action": "approved"},
         )
 
     async def _handle_agents_command(

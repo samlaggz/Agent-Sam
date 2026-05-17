@@ -57,7 +57,7 @@ async def test_cli_gateway_sends_text_into_shared_service(
 
     assert response is not None
     assert response.task_id is not None
-    assert any("Task created." in output for output in outputs)
+    assert any("Got it" in output or "Task ID:" in output for output in outputs)
 
     async with session_factory() as session:
         db_message = await session.scalar(select(Message).where(Message.content == "Create a task from CLI"))

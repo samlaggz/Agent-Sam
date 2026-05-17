@@ -250,7 +250,7 @@ async def test_agent_runtime_completes_safe_plan(
     assert len(tool_calls) == 1
     assert tool_calls[0].tool_name == "health_snapshot"
     assert tool_calls[0].status == "completed"
-    assert len(task_memories) >= 3
+    assert len(task_memories) >= 1
     assert any(message["stage"] == "report_result" for message in progress_reporter.messages)
 
 

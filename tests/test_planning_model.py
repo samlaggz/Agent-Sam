@@ -12,11 +12,9 @@ def test_planning_model_includes_web_tools_for_research_agent(session_factory) -
         profile=get_agent_profile("research_agent"),
     )
 
-    messages = model._build_messages(
-        task={"id": str(uuid4()), "title": "Find latest docs", "description": "Need online research"},
-        memory_context=[],
-        skill_context=[],
-    )
+    # The hermes client should include web tools in its tool definitions
+    tool_defs = model.hermes_client.get_tool_definitions()
+    tool_names = [t["function"]["name"] for t in tool_defs]
 
-    assert "web_search" in messages[0]["content"]
-    assert "web_open" in messages[0]["content"]
+    assert "web_search" in tool_names
+    assert "web_open" in tool_names

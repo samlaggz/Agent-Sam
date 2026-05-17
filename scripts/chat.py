@@ -42,8 +42,8 @@ _BANNER = r"""
 """
 
 _DIVIDER = "─" * 72
-TASK_POLL_TIMEOUT = 120.0
-TASK_POLL_INTERVAL = 2.0
+TASK_POLL_TIMEOUT = 180.0
+TASK_POLL_INTERVAL = 1.5
 _LAST_TASK_ID: str | None = None
 _PENDING_APPROVALS: dict[str, str] = {}  # approval_id -> task_title
 
@@ -117,14 +117,16 @@ def _make_incoming(text: str, settings: Any) -> Any:
 
 
 async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, settings: Any) -> None:
+    """Poll task progress with smooth Hermes-style streaming display."""
     from db.models import Approval, Message, Task, TaskStep, ToolCall
     from sqlalchemy import select
 
     deadline = asyncio.get_event_loop().time() + TASK_POLL_TIMEOUT
-    seen_msg_ids: set[str] = set()
     seen_tc_ids: set[str] = set()
-    seen_step_ids: set[str] = set()
+    seen_msg_ids: set[str] = set()
     printed_approval = False
+    spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    spin_idx = 0
 
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(TASK_POLL_INTERVAL)
@@ -134,30 +136,7 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
                 if task is None:
                     break
 
-                # ── Stream step progress ──────────────────────────────
-                steps_result = await session.execute(
-                    select(TaskStep)
-                    .where(TaskStep.task_id == task_id)
-                    .order_by(TaskStep.position.asc())
-                )
-                steps = list(steps_result.scalars().all())
-                for step in steps:
-                    sid = str(step.id)
-                    status_key = f"{sid}:{step.status}"
-                    if status_key in seen_step_ids:
-                        continue
-                    seen_step_ids.add(status_key)
-                    meta = step.metadata_json if isinstance(step.metadata_json, dict) else {}
-                    tool = meta.get("tool_name") or ""
-                    cmd = meta.get("command") or ""
-
-                    if step.status == "running":
-                        if cmd:
-                            print(f"  \033[90m  $ {cmd[:100]}\033[0m")
-                        else:
-                            print(f"  \033[90m  → Step {step.position}: {step.title[:70]}\033[0m")
-
-                # ── Stream tool call outputs ──────────────────────────
+                # ── Stream tool calls (Hermes-style) ─────────────
                 tc_result = await session.execute(
                     select(ToolCall)
                     .where(ToolCall.task_id == task_id)
@@ -172,24 +151,36 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
                     seen_tc_ids.add(status_key)
                     inp = tc.input_payload if isinstance(tc.input_payload, dict) else {}
                     cmd = inp.get("command", "")
+                    tool_name = tc.tool_name or ""
 
-                    if tc.status == "running" and cmd:
-                        print(f"  \033[90m  $ {cmd[:100]}\033[0m")
-                    elif tc.status == "completed":
-                        out = (tc.output_text or "")[:300]
+                    if tc.status == "running":
                         if cmd:
-                            print(f"  \033[32m  ✓ $ {cmd[:80]}\033[0m")
+                            print(f"  \033[90m  ⚡ {cmd[:120]}\033[0m")
+                        elif tool_name:
+                            print(f"  \033[90m  ⚡ {tool_name}...\033[0m")
+                    elif tc.status == "completed":
+                        out = (tc.output_text or "")[:500]
+                        if cmd:
+                            print(f"  \033[32m  ✓\033[0m \033[90m$ {cmd[:100]}\033[0m")
+                        elif tool_name:
+                            print(f"  \033[32m  ✓\033[0m \033[90m{tool_name}\033[0m")
                         if out.strip():
-                            for line in out.strip().splitlines()[:8]:
-                                print(f"  \033[90m    {line[:100]}\033[0m")
-                    elif tc.status == "failed":
-                        err = (tc.stderr_text or tc.output_text or "")[:200]
-                        print(f"  \033[31m  ✗ $ {cmd[:80]}\033[0m")
+                            for line in out.strip().splitlines()[:6]:
+                                cleaned = line[:120].strip()
+                                if cleaned:
+                                    print(f"  \033[90m    {cleaned}\033[0m")
+                    elif tc.status in ("failed", "timed_out"):
+                        err = (tc.stderr_text or tc.output_text or "")[:300]
+                        if cmd:
+                            print(f"  \033[31m  ✗\033[0m \033[90m$ {cmd[:100]}\033[0m")
                         if err.strip():
-                            for line in err.strip().splitlines()[:4]:
-                                print(f"  \033[31m    {line[:100]}\033[0m")
+                            for line in err.strip().splitlines()[:3]:
+                                print(f"  \033[31m    {line[:120]}\033[0m")
+                    elif tc.status == "pending_approval":
+                        if cmd:
+                            print(f"  \033[33m  ⏳ Needs approval:\033[0m \033[90m$ {cmd[:100]}\033[0m")
 
-                # ── Check for approvals ───────────────────────────────
+                # ── Check for approvals ───────────────────────────
                 if task.status == "paused" and not printed_approval:
                     ap_result = await session.execute(
                         select(Approval)
@@ -201,14 +192,14 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
                     if approval is not None:
                         command = ""
                         if approval.tool_call_id is not None:
-                            tc = await session.get(ToolCall, approval.tool_call_id)
-                            if tc is not None and isinstance(tc.input_payload, dict):
-                                command = tc.input_payload.get("command", "")
+                            tc_obj = await session.get(ToolCall, approval.tool_call_id)
+                            if tc_obj is not None and isinstance(tc_obj.input_payload, dict):
+                                command = tc_obj.input_payload.get("command", "")
                         _print_approval_needed(str(approval.id), command, task.title)
                         printed_approval = True
                         continue
 
-                # ── Print final result messages ───────────────────────
+                # ── Check for final result messages ───────────────
                 msg_result = await session.execute(
                     select(Message)
                     .where(Message.task_id == task_id, Message.role == "assistant")
@@ -224,9 +215,8 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
                         seen_msg_ids.add(mid)
                         _print_result_block(task.title, msg.content, task.status)
 
-                # ── Check terminal status ─────────────────────────────
+                # ── Terminal status check ─────────────────────────
                 if task.status in {"completed", "failed", "cancelled"}:
-                    # Print final result if we haven't seen it yet
                     if not seen_msg_ids:
                         last = next(
                             (m for m in reversed(messages)
@@ -239,6 +229,12 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
 
                 if printed_approval and task.status not in {"paused"}:
                     printed_approval = False
+
+                # Show thinking indicator for active tasks
+                if task.status == "running" and not seen_tc_ids:
+                    spin_idx = (spin_idx + 1) % len(spinner_chars)
+                    print(f"\r  \033[36m{spinner_chars[spin_idx]} Thinking...\033[0m", end="", flush=True)
+
         except Exception:
             await asyncio.sleep(TASK_POLL_INTERVAL)
             continue

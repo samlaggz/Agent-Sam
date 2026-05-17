@@ -725,11 +725,10 @@ class AgentGatewayService:
         return f"{first_line[: MAX_TASK_TITLE_LENGTH - 3].rstrip()}..."
 
     def _format_task_confirmation(self, task: Task, *, route_preview=None) -> str:
-        message = "Got it — I’ve queued that for the right specialist."
+        message = "Got it — I'm on it."
         if route_preview is not None:
             message += (
-                "\n"
-                f"Agent: {route_preview.agent_slug}\n"
+                f"\nAgent: {route_preview.agent_slug}\n"
                 f"Why: {route_preview.reason}"
             )
         message += f"\nTask ID: {task.id}"
@@ -852,25 +851,38 @@ class AgentGatewayService:
         return any(p in normalized_text for p in error_patterns)
 
     async def _decide_text_intent(self, text: str) -> str:
+        """
+        Fast, layered intent detection — heuristics first, model fallback only
+        when genuinely ambiguous. Optimized to avoid unnecessary LLM calls.
+        """
         normalized_text = self._normalize_text(text)
+
+        # Layer 1: Hard rules (no ambiguity, instant)
         if self._requires_server_action(normalized_text):
             return "task"
         if self._is_capability_question(normalized_text) or self._is_followup_question(normalized_text):
             return "chat"
+
+        # Layer 2: Strong pattern matching (fast, reliable)
         if self._is_current_events_request(normalized_text):
             return "task"
         if self._is_strong_task_request(normalized_text, original_text=text):
             return "task"
         if self._is_strong_chat_message(normalized_text):
             return "chat"
+        if self._looks_like_task_request(normalized_text, original_text=text):
+            return "task"
 
+        # Layer 3: Model classification (only for truly ambiguous messages)
         intent = await self._classify_text_intent_with_model(text)
         if intent is not None:
             return intent
 
-        if self._looks_like_task_request(normalized_text, original_text=text):
-            return "task"
-        return "chat"
+        # Layer 4: Default — short messages are chat, longer ones are tasks
+        words = normalized_text.split()
+        if len(words) <= 4:
+            return "chat"
+        return "task"
 
     async def _classify_text_intent_with_model(self, text: str) -> str | None:
         model_name = self._resolve_inline_chat_model()
@@ -951,14 +963,16 @@ class AgentGatewayService:
             {
                 "role": "system",
                 "content": (
-                    "You are Agent Sam — a private AI agent OS. Reply concisely. "
-                    "CRITICAL: NEVER output shell commands, code blocks, or say 'Running:' in chat replies. "
-                    "You are the CHAT layer only. If the user needs ANY server action, say 'I will queue that as a task'. "
-                    "Do NOT pretend to run commands. Do NOT write bash/code blocks. "
-                    "You may ONLY: answer from conversation history, confirm previous results, ask clarifying questions, or explain capabilities. "
-                    "When asked what model: 'I am Agent Sam powered by OpenRouter with specialist agents'. "
-                    f"Web research is {web_access_state}. "
-                    "Use conversation history for follow-ups. Be direct."
+                    "You are Agent Sam — a private AI agent OS. You are the conversational chat layer.\n\n"
+                    "RULES:\n"
+                    "- Be concise, warm, and helpful. Use natural language.\n"
+                    "- NEVER output shell commands, code blocks, or pretend to run anything.\n"
+                    "- If the user needs a server action, say: 'I'll queue that as a task for you.'\n"
+                    "- Use conversation history to provide context-aware answers.\n"
+                    "- When asked what you are: 'I'm Agent Sam, an AI agent OS with specialist agents.'\n"
+                    f"- Web research: {web_access_state}.\n"
+                    "- If you don't know something from context, say so honestly.\n"
+                    "- Keep replies under 3 sentences unless the user asks for detail."
                 ),
             },
         ]

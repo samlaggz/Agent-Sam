@@ -83,7 +83,7 @@ async def test_handle_text_message_persists_message_and_creates_task(
     response = await service.handle_incoming_message(incoming)
 
     assert response.task_id is not None
-    assert "queued that for the right specialist" in response.text.lower()
+    assert "got it" in response.text.lower()
     assert "Task ID:" in response.text
 
     async with session_factory() as session:
@@ -204,7 +204,7 @@ async def test_handle_text_message_creates_task_for_explicit_work_request_questi
     )
 
     assert response.task_id is not None
-    assert "queued that for the right specialist" in response.text.lower()
+    assert "got it" in response.text.lower()
     assert "Agent: server_ops_agent" in response.text
 
 
@@ -220,7 +220,7 @@ async def test_task_confirmation_is_human_readable(
     )
 
     assert response.task_id is not None
-    assert "Got it — I’ve queued that for the right specialist." in response.text
+    assert "got it" in response.text.lower()
     assert "Task ID:" in response.text
 
 
@@ -430,7 +430,7 @@ async def test_handle_new_queue_and_status_commands(
         )
     )
 
-    assert "queued that for the right specialist" in create_response.text.lower()
+    assert "got it" in create_response.text.lower()
     assert "Queue status" in queue_response.text
     assert "Pending: 1" in queue_response.text
     assert f"Task {create_response.task_id}" in status_response.text

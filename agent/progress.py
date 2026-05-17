@@ -27,7 +27,7 @@ class TelegramProgressAdapter:
         if metadata.get("source") != "telegram":
             return
 
-        if stage not in {"report_result", "approval_required"}:
+        if stage not in {"report_result", "approval_required", "tool_call"}:
             return
 
         chat_id = metadata.get("source_chat_id")

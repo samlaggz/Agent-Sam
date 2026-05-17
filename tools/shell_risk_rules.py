@@ -195,6 +195,21 @@ SAFE_RULES = [
         reason="Piped read-only commands are safe.",
     ),
     RiskRule(
+        name="tee-file-creation",
+        pattern=r"^(sudo\s+)?tee\s+",
+        reason="File creation with tee is safe in admin mode.",
+    ),
+    RiskRule(
+        name="nginx-test",
+        pattern=r"^(sudo\s+)?nginx\s+-t",
+        reason="Nginx config test is read-only and safe.",
+    ),
+    RiskRule(
+        name="certbot-check",
+        pattern=r"^(sudo\s+)?certbot\s+(certificates|--help)",
+        reason="Certbot certificate listing is safe.",
+    ),
+    RiskRule(
         name="sudo-read-commands",
         pattern=r"^sudo\s+(cat|ls|find|grep|head|tail|ps|ss|netstat|ip|systemctl\s+(status|list-units|is-active|show)|journalctl|iptables\s+-L|ufw\s+status|du|df|lsof)\b",
         reason="Sudo read-only commands are safe.",

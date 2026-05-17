@@ -243,5 +243,35 @@ def _score_memory(memory: Memory, *, task_text: str, task_tags: list[str], task_
     tag_overlap = len(set(task_tags) & set(normalize_tags(memory.tags_json or [])))
     type_weight = MEMORY_TYPE_WEIGHTS.get(memory.memory_type, 1.0)
     scope_weight = 1.8 if memory.task_id == task_id else SCOPE_WEIGHTS.get(memory.scope, 0.7)
-    recency_weight = 0.5 if memory.last_used_at is not None else 0.0
-    return (text_overlap * 3.0) + (tag_overlap * 2.0) + (memory.confidence * 2.0) + type_weight + scope_weight + recency_weight
+
+    # Recency decay: recent memories score higher
+    now = datetime.now(timezone.utc)
+    recency_weight = 0.0
+    try:
+        if memory.last_used_at is not None:
+            last_used = memory.last_used_at
+            if last_used.tzinfo is None:
+                last_used = last_used.replace(tzinfo=timezone.utc)
+            age_hours = (now - last_used).total_seconds() / 3600
+            recency_weight = max(0.0, 2.0 - (age_hours / 24))
+        elif memory.created_at is not None:
+            created = memory.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_hours = (now - created).total_seconds() / 3600
+            recency_weight = max(0.0, 1.5 - (age_hours / 48))
+    except (TypeError, AttributeError):
+        recency_weight = 0.5
+
+    # Boost warnings and decisions (actionable memories)
+    actionable_boost = 1.5 if memory.memory_type in ("warning", "decision") else 0.0
+
+    return (
+        (text_overlap * 3.0)
+        + (tag_overlap * 2.0)
+        + (memory.confidence * 2.0)
+        + type_weight
+        + scope_weight
+        + recency_weight
+        + actionable_boost
+    )

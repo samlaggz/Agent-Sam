@@ -15,8 +15,8 @@ from db.models import Approval, Task, ToolCall
 from tools.shell_risk_rules import BLOCKED_RULES, DANGEROUS_RULES, HIGH_RISK_RULES, MEDIUM_RISK_RULES, SAFE_RULES, RiskRule
 
 
-DEFAULT_TIMEOUT_SECONDS = 30.0
-MAX_OUTPUT_CHARS = 16_000
+DEFAULT_TIMEOUT_SECONDS = 60.0
+MAX_OUTPUT_CHARS = 24_000
 ALLOWED_ENVIRONMENT_KEYS = (
     "PATH",
     "PATHEXT",
@@ -29,6 +29,14 @@ ALLOWED_ENVIRONMENT_KEYS = (
     "TEMP",
     "LANG",
     "TERM",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "HOSTNAME",
+    "LC_ALL",
+    "LC_CTYPE",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
 )
 
 

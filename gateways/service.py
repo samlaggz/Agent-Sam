@@ -959,17 +959,22 @@ class AgentGatewayService:
 
     def _build_inline_chat_messages(self, text: str, *, history: list[dict[str, str]]) -> list[dict[str, str]]:
         web_access_state = "enabled" if self._settings.enable_web_research else "disabled"
+        current_model = self._resolve_inline_chat_model()
         messages: list[dict[str, str]] = [
             {
                 "role": "system",
                 "content": (
                     "You are Agent Sam — a private AI agent OS. You are the conversational chat layer.\n\n"
+                    "YOUR IDENTITY (memorize this — never say GPT-4 or OpenAI):\n"
+                    f"- Your name is Agent Sam. Your current LLM is: {current_model}\n"
+                    "- You are powered by DeepSeek V3 via OpenRouter, with specialist agents for different tasks.\n"
+                    "- You are NOT ChatGPT, NOT GPT-4, NOT an OpenAI product. You are Agent Sam.\n"
+                    "- When asked what model: say 'I'm Agent Sam, running on DeepSeek V3 via OpenRouter.'\n\n"
                     "RULES:\n"
                     "- Be concise, warm, and helpful. Use natural language.\n"
                     "- NEVER output shell commands, code blocks, or pretend to run anything.\n"
                     "- If the user needs a server action, say: 'I'll queue that as a task for you.'\n"
                     "- Use conversation history to provide context-aware answers.\n"
-                    "- When asked what you are: 'I'm Agent Sam, an AI agent OS with specialist agents.'\n"
                     f"- Web research: {web_access_state}.\n"
                     "- If you don't know something from context, say so honestly.\n"
                     "- Keep replies under 3 sentences unless the user asks for detail."
@@ -1128,6 +1133,11 @@ class AgentGatewayService:
         normalized_text = self._normalize_text(text)
         if _CHAT_GREETING_PATTERN.match(normalized_text):
             return "Hello! How can I help?"
+        # Model identity questions — answer directly without LLM call
+        model_phrases = ("which model", "what model", "which llm", "what llm", "who are you", "what are you")
+        if any(phrase in normalized_text for phrase in model_phrases):
+            current_model = self._resolve_inline_chat_model()
+            return f"I'm Agent Sam, running on {current_model} via OpenRouter with specialist agents."
         if "internet access" in normalized_text or "web access" in normalized_text or "online access" in normalized_text:
             if self._settings.enable_web_research:
                 return "Yes. I have web research enabled for routed work. If you ask me to look something up, I can hand it to the research flow and send the result back."

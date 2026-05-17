@@ -87,7 +87,7 @@ def test_run_setup_linux_mode_prints_production_deployment_commands(tmp_path: Pa
     )
 
     assert exit_code == 0
-    assert any("curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s --" in message for message in outputs)
+    assert any("bash <(curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh)" in message for message in outputs)
     assert any("export AGENT_SAM_GITHUB_TOKEN=<github_pat_with_repo_read>" in message for message in outputs)
     assert any("https://api.github.com/repos/samlaggz/Agent-Sam/contents/install.sh?ref=main" in message for message in outputs)
     assert any("bash deployment/linux/install-host-assets.sh /opt/agent-sam" in message for message in outputs)

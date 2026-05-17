@@ -121,8 +121,8 @@ def build_one_line_install_command(
 
     rendered_args = " ".join(shlex.quote(argument) for argument in installer_args)
     if rendered_args:
-        return f"{download_command} | bash -s -- {rendered_args}"
-    return f"{download_command} | bash -s --"
+        return f"bash <({download_command}) {rendered_args}"
+    return f"bash <({download_command})"
 
 
 def run() -> None:

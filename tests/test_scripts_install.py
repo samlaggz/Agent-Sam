@@ -149,8 +149,7 @@ def test_build_one_line_install_command_renders_remote_bootstrap_command() -> No
         start_services=False,
     )
 
-    assert command.startswith("curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh")
-    assert "| bash -s --" in command
+    assert command.startswith("bash <(curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh)")
     assert "--target /srv/agent-sam" in command
     assert "--skip-nginx" in command
     assert "--skip-start" in command
@@ -164,4 +163,4 @@ def test_build_one_line_install_command_renders_private_github_api_command() -> 
     assert "https://api.github.com/repos/samlaggz/Agent-Sam/contents/install.sh?ref=main" in command
     assert "Authorization: Bearer ${AGENT_SAM_GITHUB_TOKEN}" in command
     assert "Accept: application/vnd.github.raw" in command
-    assert command.endswith("| bash -s --")
+    assert command.startswith("bash <(curl -fsSL")

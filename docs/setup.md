@@ -66,14 +66,14 @@ The setup wizard now prepares the production env values and prints the exact one
 
 ```bash
 python -m scripts.setup --production
-curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s --
+bash <(curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh)
 ```
 
 For a private GitHub repo, use:
 
 ```bash
 export AGENT_SAM_GITHUB_TOKEN=<github_pat_with_repo_read>
-curl -fsSL -H "Authorization: Bearer ${AGENT_SAM_GITHUB_TOKEN}" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/samlaggz/Agent-Sam/contents/install.sh?ref=main | bash -s --
+bash <(curl -fsSL -H "Authorization: Bearer ${AGENT_SAM_GITHUB_TOKEN}" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/samlaggz/Agent-Sam/contents/install.sh?ref=main)
 ```
 
 If the repo is already checked out on the host, the fallback remains:

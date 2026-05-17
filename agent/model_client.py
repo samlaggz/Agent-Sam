@@ -131,7 +131,10 @@ class LiteLLMPlanningModel:
             "4. Commands must be valid executable shell commands. "
             "5. ALWAYS add a final verification step that tests the result (e.g. curl, ls, nginx -t). "
             "6. If a step fails, add a fix step — do not just report the failure. "
-            "7. Keep plans SHORT: 2-4 steps max for simple tasks, 4-6 for complex ones."
+            "7. Keep plans SHORT: 2-4 steps max for simple tasks, 4-6 for complex ones. "
+            "8. To CREATE a file, use tee with heredoc: tee /path/file > /dev/null << 'EOF'\\ncontent\\nEOF "
+            "9. Before symlinking or reloading nginx, first remove any broken symlinks: find /etc/nginx/sites-enabled/ -xtype l -delete "
+            "10. NEVER cat a file that doesn't exist yet. Create it first."
         )
         user_prompt = json.dumps(
             self._build_request_payload(

@@ -123,6 +123,12 @@ render_template "${REPO_ROOT}/deployment/systemd/agent-telegram.service" "${SYST
 echo "Reloading systemd daemon"
 run_privileged systemctl daemon-reload
 
+echo "Installing agent-sam global symlink"
+if [[ "${DRY_RUN}" != "true" ]]; then
+  ln -sf "${APP_DIR}/.venv/bin/agent-sam" /usr/local/bin/agent-sam 2>/dev/null || true
+  chmod +x /usr/local/bin/agent-sam 2>/dev/null || true
+fi
+
 if [[ "${SKIP_NGINX}" == "true" ]]; then
   echo "Skipping nginx example install."
 elif command -v nginx >/dev/null 2>&1; then

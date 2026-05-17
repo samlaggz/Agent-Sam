@@ -35,15 +35,11 @@ while [[ "$#" -gt 0 ]]; do
   shift
 done
 
-if [[ "${EUID}" -eq 0 ]]; then
-  echo "Run this script as the dedicated application user, not root." >&2
-  exit 1
-fi
-
-EXPECTED_USER="${APP_USER:-agentos}"
+# Allow running as root or as the dedicated app user
 CURRENT_USER="$(id -un)"
-if [[ "${CURRENT_USER}" != "${EXPECTED_USER}" ]]; then
-  echo "Run this script as ${EXPECTED_USER}. Current user: ${CURRENT_USER}." >&2
+EXPECTED_USER="${APP_USER:-agentos}"
+if [[ "${EUID}" -ne 0 ]] && [[ "${CURRENT_USER}" != "${EXPECTED_USER}" ]]; then
+  echo "Run this script as root or as ${EXPECTED_USER}. Current user: ${CURRENT_USER}." >&2
   exit 1
 fi
 

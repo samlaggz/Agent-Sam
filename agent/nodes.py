@@ -43,7 +43,7 @@ from tools.web_research import WebResearchProvider, WebResearchTool
 
 logger = logging.getLogger(__name__)
 
-MAX_HERMES_ITERATIONS = 30
+MAX_HERMES_ITERATIONS = 40
 
 
 @dataclass(frozen=True)
@@ -722,11 +722,20 @@ class AgentNodeHandlers:
             if result.exit_code == 0:
                 return f"Exit code 0.\n{output[:4000]}", "completed"
             else:
-                return f"Exit code {result.exit_code}.\n{output[:4000]}", "failed"
+                # Non-zero exit codes are informational — the model should see
+                # the output and decide what to do. Don't mark as "failed" for
+                # guardrails unless there's a real error.
+                combined = f"{result.stdout.strip()}\n{result.stderr.strip()}".strip()
+                return f"Exit code {result.exit_code}.\n{combined[:4000]}", "completed"
 
-        if result.status in ("failed", "timed_out", "blocked"):
-            error = result.stderr.strip() or result.stdout.strip() or result.status
-            return f"Command failed ({result.status}): {error[:4000]}", "failed"
+        if result.status == "blocked":
+            error = result.stderr.strip() or result.stdout.strip() or "Command blocked"
+            return f"BLOCKED: {error[:4000]}", "failed"
+
+        if result.status in ("failed", "timed_out"):
+            # Combine stdout and stderr for the model to see the full picture
+            combined = f"{result.stdout.strip()}\n{result.stderr.strip()}".strip()
+            return f"Exit code {result.exit_code}. {result.status}.\n{combined[:4000]}", "failed"
 
         return f"Unexpected status: {result.status}", "failed"
 

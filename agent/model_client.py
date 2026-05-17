@@ -134,7 +134,7 @@ class Conversation:
 class ToolCallGuardrails:
     """Hermes-style guardrails: detect loops, repeated failures, runaway."""
 
-    def __init__(self, *, max_iterations: int = 30, max_consecutive_failures: int = 3) -> None:
+    def __init__(self, *, max_iterations: int = 40, max_consecutive_failures: int = 5) -> None:
         self.max_iterations = max_iterations
         self.max_consecutive_failures = max_consecutive_failures
         self._iteration_count = 0

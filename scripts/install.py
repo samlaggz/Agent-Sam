@@ -24,6 +24,9 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 PRODUCTION_TARGET = Path("/opt/agent-sam")
 APP_USER = "agentos"
+INSTALL_REPO_SLUG = "samlaggz/Agent-Sam"
+INSTALL_REPO_REF = "main"
+INSTALL_TOKEN_ENV_VAR = "AGENT_SAM_GITHUB_TOKEN"
 AVAILABLE_GATEWAYS = ("telegram", "cli", "webhook")
 LLM_PROVIDER_OPTIONS = {
     "1": ("OpenRouter", "openrouter/openai/gpt-4.1-mini", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"),
@@ -87,6 +90,39 @@ class StepPrinter:
     def step(self, message: str) -> None:
         self._current_step += 1
         self._output(f"[{self._current_step}/{self._total_steps}] {message}")
+
+
+def build_one_line_install_command(
+    *,
+    target: Path = PRODUCTION_TARGET,
+    install_nginx: bool = True,
+    start_services: bool = True,
+    repo_slug: str = INSTALL_REPO_SLUG,
+    repo_ref: str = INSTALL_REPO_REF,
+    token_env_var: str | None = None,
+) -> str:
+    if token_env_var:
+        script_url = f"https://api.github.com/repos/{repo_slug}/contents/install.sh?ref={repo_ref}"
+        download_command = (
+            f'curl -fsSL -H "Authorization: Bearer ${{{token_env_var}}}" '
+            f'-H "Accept: application/vnd.github.raw" {shlex.quote(script_url)}'
+        )
+    else:
+        script_url = f"https://raw.githubusercontent.com/{repo_slug}/{repo_ref}/install.sh"
+        download_command = f"curl -fsSL {shlex.quote(script_url)}"
+    installer_args: list[str] = []
+
+    if target != PRODUCTION_TARGET:
+        installer_args.extend(["--target", target.as_posix()])
+    if not install_nginx:
+        installer_args.append("--skip-nginx")
+    if not start_services:
+        installer_args.append("--skip-start")
+
+    rendered_args = " ".join(shlex.quote(argument) for argument in installer_args)
+    if rendered_args:
+        return f"{download_command} | bash -s -- {rendered_args}"
+    return f"{download_command} | bash -s --"
 
 
 def run() -> None:

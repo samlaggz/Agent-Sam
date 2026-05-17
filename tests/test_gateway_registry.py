@@ -62,6 +62,16 @@ async def test_settings_parse_enabled_gateways_from_env_string(monkeypatch) -> N
     assert settings.enabled_gateways == ("telegram", "cli")
 
 
+async def test_settings_treat_blank_optional_uuid_env_values_as_none(monkeypatch) -> None:
+    monkeypatch.setenv("DEFAULT_WORKSPACE_ID", "")
+    monkeypatch.setenv("DEFAULT_USER_ID", "   ")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.default_workspace_id is None
+    assert settings.default_user_id is None
+
+
 async def test_telegram_gateway_requires_token(
     session_factory: async_sessionmaker[AsyncSession],
     workspace: Workspace,

@@ -140,3 +140,28 @@ def test_run_install_interactive_writes_env_without_printing_secret(tmp_path: Pa
     assert "LITELLM_MODEL=openrouter/openai/gpt-4.1-mini" in env_text
     assert all("telegram-secret" not in message for message in outputs)
     assert all("openrouter-secret" not in message for message in outputs)
+
+
+def test_build_one_line_install_command_renders_remote_bootstrap_command() -> None:
+    command = install_module.build_one_line_install_command(
+        target=Path("/srv/agent-sam"),
+        install_nginx=False,
+        start_services=False,
+    )
+
+    assert command.startswith("curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh")
+    assert "| bash -s --" in command
+    assert "--target /srv/agent-sam" in command
+    assert "--skip-nginx" in command
+    assert "--skip-start" in command
+
+
+def test_build_one_line_install_command_renders_private_github_api_command() -> None:
+    command = install_module.build_one_line_install_command(
+        token_env_var="AGENT_SAM_GITHUB_TOKEN",
+    )
+
+    assert "https://api.github.com/repos/samlaggz/Agent-Sam/contents/install.sh?ref=main" in command
+    assert "Authorization: Bearer ${AGENT_SAM_GITHUB_TOKEN}" in command
+    assert "Accept: application/vnd.github.raw" in command
+    assert command.endswith("| bash -s --")

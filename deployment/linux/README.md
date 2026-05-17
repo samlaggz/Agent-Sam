@@ -11,20 +11,28 @@ This deployment path is for a Linux host without Docker. The application runs as
 
 ## Bootstrap flow
 
-1. The preferred path is the one-command installer from a temporary checkout:
+1. The preferred path is the Hermes-style one-line installer:
 
    ```bash
-   cd /tmp/Agent-Sam
-   bash install.sh
+   curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s --
+   ```
+
+   For a private GitHub repo, export a read-capable token first and use:
+
+   ```bash
+   export AGENT_SAM_GITHUB_TOKEN=<github_pat_with_repo_read>
+   curl -fsSL -H "Authorization: Bearer ${AGENT_SAM_GITHUB_TOKEN}" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/samlaggz/Agent-Sam/contents/install.sh?ref=main | bash -s --
    ```
 
    Useful flags:
 
    ```bash
-   bash install.sh --dry-run
-   bash install.sh --non-interactive --skip-nginx --skip-start
-   bash install.sh --target /opt/agent-sam
+   curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s -- --dry-run
+   curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s -- --non-interactive --skip-nginx --skip-start
+   curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s -- --target /opt/agent-sam
    ```
+
+   If you already have a checkout on the host, `bash install.sh` from the repo root still uses the same installer.
 
 2. Manual fallback: from a sudo-capable operator account, create the dedicated user, `/opt/agent-sam`, the systemd units, and the nginx example if nginx is installed:
 

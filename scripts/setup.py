@@ -18,7 +18,7 @@ from app.config import Settings
 from gateways.setup import ensure_env_file, test_gateway_config, update_env_values
 from scripts.common import DEFAULT_NEXT_COMMANDS, ENV_PATH, LOCAL_DEV_FIX_COMMAND, PROJECT_ROOT, detect_os_name, format_command, parse_seed_output, print_next_commands, python_version_text, run_subprocess
 from scripts.env_writer import load_env_values, update_env_file
-from scripts.install import LLM_PROVIDER_OPTIONS, PRODUCTION_TARGET, _resolve_specialist_runtime_updates
+from scripts.install import INSTALL_TOKEN_ENV_VAR, LLM_PROVIDER_OPTIONS, PRODUCTION_TARGET, _resolve_specialist_runtime_updates, build_one_line_install_command
 
 
 PromptFunc = Callable[[str], str]
@@ -249,7 +249,25 @@ def _run_linux_production_setup(
     if not start_services:
         install_command.append("--skip-start")
 
-    wizard_io.output("Production install command:")
+    wizard_io.output("Production one-line install command:")
+    wizard_io.output(
+        build_one_line_install_command(
+            target=resolved_target,
+            install_nginx=install_nginx,
+            start_services=start_services,
+        )
+    )
+    wizard_io.output("Private GitHub repo one-line install command:")
+    wizard_io.output(f"export {INSTALL_TOKEN_ENV_VAR}=<github_pat_with_repo_read>")
+    wizard_io.output(
+        build_one_line_install_command(
+            target=resolved_target,
+            install_nginx=install_nginx,
+            start_services=start_services,
+            token_env_var=INSTALL_TOKEN_ENV_VAR,
+        )
+    )
+    wizard_io.output("Checkout-based install command:")
     wizard_io.output(format_command(install_command))
     wizard_io.output("Manual fallback commands:")
     wizard_io.output(f"bash deployment/linux/install-host-assets.sh {rendered_target}")

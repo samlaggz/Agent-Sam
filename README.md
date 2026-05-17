@@ -187,8 +187,16 @@ Use the deployment bundle in `deployment/linux/`.
 Recommended server sequence:
 
 ```bash
-cd /tmp/Agent-Sam
-bash install.sh
+curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s --
+```
+
+If you already have a checkout on the server, `bash install.sh` still works from the repo root.
+
+For a private GitHub repo, export a read-capable token first and use the GitHub contents API:
+
+```bash
+export AGENT_SAM_GITHUB_TOKEN=<github_pat_with_repo_read>
+curl -fsSL -H "Authorization: Bearer ${AGENT_SAM_GITHUB_TOKEN}" -H "Accept: application/vnd.github.raw" https://api.github.com/repos/samlaggz/Agent-Sam/contents/install.sh?ref=main | bash -s --
 ```
 
 The installer is idempotent, writes `.env` without printing secrets, bootstraps the app as `agentos`, runs migrations, auto-seeds `DEFAULT_USER_ID` and `DEFAULT_WORKSPACE_ID` when needed, runs the production doctor, and can optionally install nginx plus start services.
@@ -196,6 +204,7 @@ The installer is idempotent, writes `.env` without printing secrets, bootstraps 
 Preview the full flow safely with:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh | bash -s -- --dry-run
 bash install.sh --dry-run
 python -m scripts.setup --dry-run
 python -m scripts.doctor --production --fix

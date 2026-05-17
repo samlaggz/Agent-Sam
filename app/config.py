@@ -72,6 +72,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @field_validator("default_workspace_id", "default_user_id", mode="before")
+    @classmethod
+    def normalize_optional_uuid(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("enabled_gateways", mode="before")
     @classmethod
     def parse_enabled_gateways(cls, value: object) -> tuple[str, ...]:

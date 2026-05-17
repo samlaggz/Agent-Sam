@@ -140,6 +140,8 @@ python -m gateways.setup --disable telegram
 
 Common runtime commands from the CLI or Telegram gateway:
 
+Normal conversation gets an inline reply. Use `/new <task description>` or an explicit work request when you want a tracked task.
+
 - `/agents`
 - `/agent <slug>`
 - `/route <task_id>`

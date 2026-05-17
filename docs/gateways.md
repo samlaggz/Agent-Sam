@@ -89,7 +89,7 @@ All implemented gateways share the same command surface:
 /cancel <task_id>
 ```
 
-Any non-command text creates a task request through the shared service.
+Normal conversation gets an inline reply through the shared service. Explicit work requests still create tracked tasks, and `/new` always creates a task.
 
 ## Webhook contract
 

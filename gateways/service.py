@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+import re
 import logging
 from typing import Any
 from uuid import UUID
@@ -26,18 +28,73 @@ from db.task_queue import (
 from gateways.base import GatewayAttachment, GatewayResponse, IncomingGatewayMessage
 from services.agent_learning_service import approve_skill_proposal, approve_sub_agent_proposal
 from services.budget_service import estimate_model_cost_level
-from services.model_router import ModelRouter
+from services.model_router import ModelExecutionRequest, ModelRouter, infer_provider
 
 
 MAX_TASK_TITLE_LENGTH = 80
+INLINE_CHAT_MAX_TOKENS = 220
+INTENT_CLASSIFIER_MAX_TOKENS = 32
 logger = logging.getLogger(__name__)
+
+_TASK_ACTION_PATTERN = re.compile(
+    r"\b(add|analy[sz]e|audit|build|change|check|create|debug|deploy|design|fix|implement|improve|install|investigate|make|migrate|optimi[sz]e|refactor|remove|repair|replace|review|run|search|set up|setup|ship|test|trace|triage|update|upgrade|write)\b"
+)
+_TASK_REQUEST_PREFIX_PATTERN = re.compile(
+    r"^(please|can you|could you|would you|i need you to|need you to|help me|try to|let'?s)\b"
+)
+_CHAT_GREETING_PATTERN = re.compile(r"^(hi|hello|hey|yo|thanks|thank you)\b")
+_CHAT_QUESTION_PREFIX_PATTERN = re.compile(r"^(what|why|how|who|where|when|which|explain|tell me|show me)\b")
+_TASK_STARTERS = {
+    "add",
+    "analyze",
+    "analyse",
+    "audit",
+    "build",
+    "change",
+    "check",
+    "create",
+    "debug",
+    "deploy",
+    "design",
+    "fix",
+    "implement",
+    "improve",
+    "install",
+    "investigate",
+    "make",
+    "migrate",
+    "optimize",
+    "optimise",
+    "refactor",
+    "remove",
+    "repair",
+    "replace",
+    "review",
+    "run",
+    "search",
+    "setup",
+    "ship",
+    "test",
+    "trace",
+    "triage",
+    "update",
+    "upgrade",
+    "write",
+}
 
 
 class AgentGatewayService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        settings: Settings | None = None,
+        model_router: ModelRouter | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._settings = settings or Settings()
         self._router_agent = RouterAgent()
-        self._model_router = ModelRouter(Settings(), session_factory)
+        self._model_router = model_router or ModelRouter(self._settings, session_factory)
 
     async def handle_incoming_message(self, incoming: IncomingGatewayMessage) -> GatewayResponse:
         normalized_text = incoming.text.strip()
@@ -100,8 +157,21 @@ class AgentGatewayService:
         message: Message,
         incoming: IncomingGatewayMessage,
     ) -> GatewayResponse:
+        intent = await self._decide_text_intent(incoming.text)
+        if intent == "chat":
+            return await self._handle_chat_message(session, message, incoming)
         task = await self._create_task_from_text(session, incoming, message)
         return GatewayResponse(text=self._format_task_confirmation(task), task_id=task.id)
+
+    async def _handle_chat_message(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+    ) -> GatewayResponse:
+        del session, message
+        reply = await self._generate_inline_chat_reply(incoming.text)
+        return GatewayResponse(text=reply)
 
     async def _handle_start_command(
         self,
@@ -398,10 +468,9 @@ class AgentGatewayService:
         arguments: list[str],
     ) -> GatewayResponse:
         del session, message, incoming, arguments
-        settings = Settings()
         lines = [
-            f"Global max cost/task: ${settings.max_cost_per_task_usd:.2f}",
-            f"Daily model budget: ${settings.daily_model_budget_usd:.2f}",
+            f"Global max cost/task: ${self._settings.max_cost_per_task_usd:.2f}",
+            f"Daily model budget: ${self._settings.daily_model_budget_usd:.2f}",
         ]
         for profile in list_agents():
             if profile.slug == "router_agent":
@@ -662,6 +731,7 @@ class AgentGatewayService:
     def _help_text(self) -> str:
         return (
             "Agent Sam commands:\n"
+            "Plain chat stays conversational. Explicit work requests create tracked tasks.\n"
             "/start\n"
             "/help\n"
             "/new <task description>\n"
@@ -717,3 +787,198 @@ class AgentGatewayService:
                 }
             )
         return serialized
+
+    async def _decide_text_intent(self, text: str) -> str:
+        normalized_text = self._normalize_text(text)
+        if self._is_strong_task_request(normalized_text, original_text=text):
+            return "task"
+        if self._is_strong_chat_message(normalized_text):
+            return "chat"
+
+        intent = await self._classify_text_intent_with_model(text)
+        if intent is not None:
+            return intent
+
+        if self._looks_like_task_request(normalized_text, original_text=text):
+            return "task"
+        return "chat"
+
+    async def _classify_text_intent_with_model(self, text: str) -> str | None:
+        model_name = self._resolve_inline_chat_model()
+        if not self._can_run_model(model_name):
+            return None
+
+        try:
+            response = await self._model_router.run_completion(
+                ModelExecutionRequest(
+                    agent_slug="gateway_intent_router",
+                    model=model_name,
+                    messages=self._build_intent_classification_messages(text),
+                    temperature=0.0,
+                    max_tokens=INTENT_CLASSIFIER_MAX_TOKENS,
+                    metadata={"gateway_mode": "intent_classifier"},
+                )
+            )
+        except Exception:
+            logger.debug("Gateway intent classification fell back to local heuristics.", exc_info=True)
+            return None
+
+        payload = self._parse_json_object(response.content)
+        if isinstance(payload, dict):
+            intent = str(payload.get("intent", "")).strip().lower()
+            if intent in {"chat", "task"}:
+                return intent
+
+        lowered = response.content.strip().lower()
+        if "task" in lowered and "chat" not in lowered:
+            return "task"
+        if "chat" in lowered:
+            return "chat"
+        return None
+
+    async def _generate_inline_chat_reply(self, text: str) -> str:
+        model_name = self._resolve_inline_chat_model()
+        if not self._can_run_model(model_name):
+            return self._fallback_chat_reply(text)
+
+        try:
+            response = await self._model_router.run_completion(
+                ModelExecutionRequest(
+                    agent_slug="gateway_chat_agent",
+                    model=model_name,
+                    messages=self._build_inline_chat_messages(text),
+                    temperature=0.3,
+                    max_tokens=INLINE_CHAT_MAX_TOKENS,
+                    metadata={"gateway_mode": "inline_chat"},
+                )
+            )
+        except Exception:
+            logger.warning("Inline gateway chat completion failed; using fallback reply.", exc_info=True)
+            return self._fallback_chat_reply(text)
+
+        reply = response.content.strip()
+        return reply or self._fallback_chat_reply(text)
+
+    def _build_intent_classification_messages(self, text: str) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You classify gateway messages. Return strict JSON only with one key: "
+                    "{\"intent\":\"chat\"} or {\"intent\":\"task\"}. "
+                    "Choose task when the user is explicitly asking the agent to perform, queue, investigate, build, fix, or track work. "
+                    "Choose chat for greetings, questions, clarification, explanation, or casual conversation."
+                ),
+            },
+            {"role": "user", "content": text.strip()},
+        ]
+
+    def _build_inline_chat_messages(self, text: str) -> list[dict[str, str]]:
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are Agent Sam in an interactive gateway chat. Reply directly and concisely. "
+                    "Do not claim that background work, file edits, or task execution already happened unless the user explicitly saw that happen. "
+                    "This gateway chats inline for normal conversation and creates tracked tasks only for explicit work requests. "
+                    "If asked what this interface is, explain that it is the Agent Sam chat gateway and mention /new for explicit task creation."
+                ),
+            },
+            {"role": "user", "content": text.strip()},
+        ]
+
+    def _resolve_inline_chat_model(self) -> str:
+        return self._settings.default_model.strip() or self._settings.litellm_model.strip()
+
+    def _can_run_model(self, model_name: str) -> bool:
+        provider = infer_provider(model_name)
+        if provider == "openrouter":
+            return bool(self._settings.openrouter_api_key or self._settings.litellm_api_key)
+        if provider == "openai":
+            return bool(self._settings.openai_api_key or self._settings.litellm_api_key)
+        if provider == "anthropic":
+            return bool(self._settings.anthropic_api_key or self._settings.litellm_api_key)
+        if provider == "gemini":
+            return bool(self._settings.gemini_api_key or self._settings.litellm_api_key)
+        if provider == "ollama":
+            return bool(self._settings.ollama_base_url)
+        return bool(self._settings.litellm_api_key)
+
+    def _looks_like_task_request(self, normalized_text: str, *, original_text: str) -> bool:
+        if self._is_strong_task_request(normalized_text, original_text=original_text):
+            return True
+        if _TASK_REQUEST_PREFIX_PATTERN.match(normalized_text) and _TASK_ACTION_PATTERN.search(normalized_text):
+            return True
+        action_matches = {match.group(0) for match in _TASK_ACTION_PATTERN.finditer(normalized_text)}
+        if len(action_matches) >= 2:
+            return True
+        return False
+
+    def _is_strong_task_request(self, normalized_text: str, *, original_text: str) -> bool:
+        words = normalized_text.split()
+        if not words:
+            return False
+        first_word = words[0]
+        first_two_words = " ".join(words[:2])
+        if "\n" in original_text and len(words) >= 6:
+            return True
+        if normalized_text.startswith(("task:", "todo:", "queue this", "create a task", "make a task")):
+            return True
+        if first_word in _TASK_STARTERS or first_two_words == "set up":
+            return True
+        if _TASK_REQUEST_PREFIX_PATTERN.match(normalized_text) and _TASK_ACTION_PATTERN.search(normalized_text):
+            return True
+        return False
+
+    def _is_strong_chat_message(self, normalized_text: str) -> bool:
+        if not normalized_text:
+            return False
+        words = normalized_text.split()
+        if _CHAT_GREETING_PATTERN.match(normalized_text) and len(words) <= 5:
+            return True
+        if normalized_text.endswith("?") and not self._looks_like_task_request_question(normalized_text):
+            return True
+        if _CHAT_QUESTION_PREFIX_PATTERN.match(normalized_text) and not _TASK_ACTION_PATTERN.search(normalized_text):
+            return True
+        if len(words) <= 3 and not _TASK_ACTION_PATTERN.search(normalized_text):
+            return True
+        return False
+
+    def _looks_like_task_request_question(self, normalized_text: str) -> bool:
+        return bool(_TASK_REQUEST_PREFIX_PATTERN.match(normalized_text) and _TASK_ACTION_PATTERN.search(normalized_text))
+
+    def _fallback_chat_reply(self, text: str) -> str:
+        normalized_text = self._normalize_text(text)
+        if _CHAT_GREETING_PATTERN.match(normalized_text):
+            return "Hi. I can chat here for quick questions, and I create tracked tasks only when you ask me to do work or use /new."
+        if normalized_text.startswith(("what is this", "what's this", "what does this")):
+            return (
+                "This is the Agent Sam gateway chat. Normal conversation stays in chat, and explicit work requests become tracked tasks. "
+                "Use /help for commands or /new <task description> when you want to queue work yourself."
+            )
+        if normalized_text.endswith("?") or _CHAT_QUESTION_PREFIX_PATTERN.match(normalized_text):
+            return (
+                "I can answer quick questions here. If you want tracked work queued for the worker, ask me to do something explicitly or use /new <task description>."
+            )
+        return "I can chat here and I can queue work. Use /new <task description> when you want a tracked task."
+
+    def _parse_json_object(self, text: str) -> dict[str, Any] | None:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.strip("`")
+            cleaned = cleaned.replace("json", "", 1).strip()
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return None
+            try:
+                payload = json.loads(cleaned[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+        return payload if isinstance(payload, dict) else None
+
+    def _normalize_text(self, text: str) -> str:
+        return " ".join(text.strip().lower().split())

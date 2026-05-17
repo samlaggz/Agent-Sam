@@ -112,7 +112,7 @@ async def test_cli_gateway_keeps_running_after_normal_message_and_queue_command(
     assert service.received_texts == ["hello", "/queue"]
     assert outputs == [
         "Agent_Sam CLI gateway ready",
-        "Type /help for commands or /exit to stop.",
+        "Chat normally for replies, use /new to queue work, or /exit to stop.",
         "hello-response",
         "queue-response",
     ]
@@ -139,7 +139,7 @@ async def test_cli_gateway_quit_command_stops_cleanly(
     assert service.received_texts == []
     assert outputs == [
         "Agent_Sam CLI gateway ready",
-        "Type /help for commands or /exit to stop.",
+        "Chat normally for replies, use /new to queue work, or /exit to stop.",
     ]
 
 
@@ -164,7 +164,7 @@ async def test_cli_gateway_surfaces_database_errors_clearly_and_stays_alive(
     assert service.received_texts == ["hello"]
     assert outputs == [
         "Agent_Sam CLI gateway ready",
-        "Type /help for commands or /exit to stop.",
+        "Chat normally for replies, use /new to queue work, or /exit to stop.",
         DATABASE_NOT_READY_MESSAGE,
     ]
 
@@ -191,6 +191,6 @@ async def test_cli_gateway_times_out_stalled_requests_and_stays_alive(
     assert service.received_texts == ["hello"]
     assert outputs == [
         "Agent_Sam CLI gateway ready",
-        "Type /help for commands or /exit to stop.",
+        "Chat normally for replies, use /new to queue work, or /exit to stop.",
         DATABASE_NOT_READY_MESSAGE,
     ]

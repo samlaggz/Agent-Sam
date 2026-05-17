@@ -1,9 +1,11 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import Settings
 from db.models import Approval, Message, Task, ToolCall, User, Workspace
 from db.repositories import create_task
 from gateways.base import GatewayChat, GatewayUser, IncomingGatewayMessage
@@ -18,9 +20,26 @@ def build_gateway_service(
     session_factory: async_sessionmaker[AsyncSession],
     workspace: Workspace,
     user: User,
+    *,
+    settings: Settings | None = None,
+    model_router=None,
 ) -> AgentGatewayService:
     del workspace, user
-    return AgentGatewayService(session_factory)
+    return AgentGatewayService(session_factory, settings=settings, model_router=model_router)
+
+
+class FakeModelRouter:
+    def __init__(self, responses: list[str] | None = None, *, error: Exception | None = None) -> None:
+        self._responses = responses or []
+        self._error = error
+        self.requests = []
+
+    async def run_completion(self, request):
+        self.requests.append(request)
+        if self._error is not None:
+            raise self._error
+        content = self._responses.pop(0) if self._responses else ""
+        return SimpleNamespace(content=content)
 
 
 def build_incoming_message(
@@ -78,6 +97,75 @@ async def test_handle_text_message_persists_message_and_creates_task(
         assert task.description == incoming.text
         assert task.created_by_user_id == user.id
         assert task.workspace_id == workspace.id
+
+
+async def test_handle_text_message_returns_inline_chat_reply_without_creating_task(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    model_router = FakeModelRouter(responses=["Hi there. Ask a question or use /new when you want queued work."])
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(openrouter_api_key="test-key"),
+        model_router=model_router,
+    )
+    incoming = build_incoming_message(workspace, user, "hello")
+
+    response = await service.handle_incoming_message(incoming)
+
+    assert response.task_id is None
+    assert response.text == "Hi there. Ask a question or use /new when you want queued work."
+    assert len(model_router.requests) == 1
+
+    async with session_factory() as session:
+        db_message = await session.scalar(select(Message).where(Message.content == incoming.text))
+        assert db_message is not None
+        assert db_message.task_id is None
+        task_count = len((await session.scalars(select(Task))).all())
+        assert task_count == 0
+
+
+async def test_handle_text_message_uses_fallback_chat_reply_when_no_model_is_available(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(
+            openrouter_api_key="",
+            litellm_api_key="",
+            openai_api_key="",
+            anthropic_api_key="",
+            gemini_api_key="",
+            ollama_base_url="",
+        ),
+    )
+
+    response = await service.handle_incoming_message(build_incoming_message(workspace, user, "what is this"))
+
+    assert response.task_id is None
+    assert "Agent Sam gateway chat" in response.text
+
+
+async def test_handle_text_message_creates_task_for_explicit_work_request_question(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(session_factory, workspace, user)
+
+    response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "Can you fix the broken nginx deploy?")
+    )
+
+    assert response.task_id is not None
+    assert "Task created." in response.text
 
 
 async def test_handle_new_queue_and_status_commands(

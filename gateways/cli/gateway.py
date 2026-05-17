@@ -50,7 +50,7 @@ class CLIGateway(Gateway):
         logger.info("CLI gateway starting")
         self._stopping = False
         self._output_writer("Agent_Sam CLI gateway ready")
-        self._output_writer("Type /help for commands or /exit to stop.")
+        self._output_writer("Chat normally for replies, use /new to queue work, or /exit to stop.")
         self._runner_task = asyncio.create_task(self._run_loop(), name="agent-sam-cli-gateway")
         logger.info("CLI gateway ready")
         logger.info("Listening for CLI messages")

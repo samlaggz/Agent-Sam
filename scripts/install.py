@@ -35,6 +35,11 @@ BUNDLED_LOCAL_DATABASE_URL = "postgresql+psycopg://agent_sam:agent_sam@127.0.0.1
 BUNDLED_LOCAL_REDIS_URL = "redis://127.0.0.1:6379/0"
 BUNDLED_LOCAL_QDRANT_URL = "http://127.0.0.1:6333"
 AVAILABLE_GATEWAYS = ("telegram", "cli", "webhook")
+DEPENDENCY_SERVICE_CONFIG = {
+    "DATABASE_URL": ("postgres", BUNDLED_LOCAL_DATABASE_URL, 5432),
+    "REDIS_URL": ("redis", BUNDLED_LOCAL_REDIS_URL, 6379),
+    "QDRANT_URL": ("qdrant", BUNDLED_LOCAL_QDRANT_URL, 6333),
+}
 LLM_PROVIDER_OPTIONS = {
     "1": ("OpenRouter", "openrouter/openai/gpt-4.1-mini", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"),
     "2": ("OpenAI", "openai/gpt-4o-mini", "OPENAI_API_KEY", None),
@@ -834,11 +839,18 @@ def _prepare_dependency_services(
         output("Dependency endpoints are not loopback-only; skipping bundled local dependency bootstrap.")
         return env_values
 
-    if _local_dependency_services_reachable(env_values):
+    dependency_statuses = _dependency_service_statuses(env_values)
+    missing_dependency_keys = [key for key, reachable in dependency_statuses.items() if not reachable]
+    if not missing_dependency_keys:
         output("Local dependency services are reachable.")
         return env_values
 
-    output("Local Postgres, Redis, or Qdrant services are not reachable on the configured loopback URLs.")
+    missing_dependency_services = [DEPENDENCY_SERVICE_CONFIG[key][0] for key in missing_dependency_keys]
+    output(
+        "Local dependency services are not reachable on the configured loopback URLs: "
+        + ", ".join(missing_dependency_services)
+        + "."
+    )
     if not _ensure_docker_available(
         prompt=prompt,
         output=output,
@@ -848,7 +860,7 @@ def _prepare_dependency_services(
     ):
         output(
             "Install Docker and run "
-            f"docker compose -f {target.as_posix()}/docker-compose.yml up -d postgres redis qdrant, "
+            f"docker compose -f {target.as_posix()}/docker-compose.yml up -d {' '.join(missing_dependency_services)}, "
             "or point DATABASE_URL, REDIS_URL, and QDRANT_URL at reachable services."
         )
         return None
@@ -857,29 +869,29 @@ def _prepare_dependency_services(
     if not options.non_interactive:
         use_bundled_stack = _prompt_yes_no(
             prompt,
-            "Start bundled postgres, redis, and qdrant Docker services and use their local default URLs?",
+            "Start bundled Docker services for the missing dependencies and use their local default URLs where needed?",
             default=True,
         )
     if not use_bundled_stack:
         output(
-            f"Run docker compose -f {target.as_posix()}/docker-compose.yml up -d postgres redis qdrant, "
+            f"Run docker compose -f {target.as_posix()}/docker-compose.yml up -d {' '.join(missing_dependency_services)}, "
             "or point DATABASE_URL, REDIS_URL, and QDRANT_URL at reachable services before retrying."
         )
         return None
 
-    bundled_env_values = {
-        **env_values,
-        "DATABASE_URL": BUNDLED_LOCAL_DATABASE_URL,
-        "REDIS_URL": BUNDLED_LOCAL_REDIS_URL,
-        "QDRANT_URL": BUNDLED_LOCAL_QDRANT_URL,
-    }
-    output("Using bundled local dependency stack defaults for DATABASE_URL, REDIS_URL, and QDRANT_URL.")
+    bundled_env_values = dict(env_values)
+    for key in missing_dependency_keys:
+        bundled_env_values[key] = DEPENDENCY_SERVICE_CONFIG[key][1]
+    output(
+        "Using bundled local dependency stack defaults for " + ", ".join(missing_dependency_keys) + "."
+    )
 
     compose_base_command = _resolve_docker_compose_base_command(command_runner=command_runner, is_root=is_root)
     if compose_base_command is None:
         output("Docker Compose is unavailable after Docker setup. Install the compose plugin and retry.")
         return None
 
+    output("Starting bundled dependency services: " + ", ".join(missing_dependency_services) + ".")
     compose_command = _privileged_command(
         [
             *compose_base_command,
@@ -887,9 +899,7 @@ def _prepare_dependency_services(
             f"{target.as_posix()}/docker-compose.yml",
             "up",
             "-d",
-            "postgres",
-            "redis",
-            "qdrant",
+            *missing_dependency_services,
         ],
         is_root=is_root,
     )
@@ -914,16 +924,15 @@ def _uses_loopback_dependency_endpoints(env_values: dict[str, str]) -> bool:
 
 
 def _local_dependency_services_reachable(env_values: dict[str, str]) -> bool:
-    database_endpoint = _extract_host_port(env_values.get("DATABASE_URL", ""), default_port=5432)
-    redis_endpoint = _extract_host_port(env_values.get("REDIS_URL", ""), default_port=6379)
-    qdrant_endpoint = _extract_host_port(env_values.get("QDRANT_URL", ""), default_port=6333)
+    return all(_dependency_service_statuses(env_values).values())
 
-    for endpoint in (database_endpoint, redis_endpoint, qdrant_endpoint):
-        if endpoint is None:
-            return False
-        if not _tcp_endpoint_reachable(*endpoint):
-            return False
-    return True
+
+def _dependency_service_statuses(env_values: dict[str, str]) -> dict[str, bool]:
+    statuses: dict[str, bool] = {}
+    for key, (_, _, default_port) in DEPENDENCY_SERVICE_CONFIG.items():
+        endpoint = _extract_host_port(env_values.get(key, ""), default_port=default_port)
+        statuses[key] = endpoint is not None and _tcp_endpoint_reachable(*endpoint)
+    return statuses
 
 
 def _wait_for_local_dependency_services(

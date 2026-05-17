@@ -275,9 +275,9 @@ def test_prepare_dependency_services_starts_bundled_local_stack_and_rewrites_env
         "QDRANT_URL": "http://127.0.0.1:6333",
     }
 
-    monkeypatch.setattr(install_module, "_local_dependency_services_reachable", lambda values: False)
+    monkeypatch.setattr(install_module, "_tcp_endpoint_reachable", lambda host, port, timeout_seconds=1.0: False)
     monkeypatch.setattr(install_module, "_wait_for_local_dependency_services", lambda values, output, timeout_seconds=60.0: True)
-    monkeypatch.setattr(install_module, "_docker_available", lambda **kwargs: True)
+    monkeypatch.setattr(install_module, "_ensure_docker_available", lambda **kwargs: True)
 
     updated_env_values = install_module._prepare_dependency_services(
         env_values,
@@ -302,7 +302,7 @@ def test_prepare_dependency_services_starts_bundled_local_stack_and_rewrites_env
     assert updated_env_values["REDIS_URL"] == install_module.BUNDLED_LOCAL_REDIS_URL
     assert updated_env_values["QDRANT_URL"] == install_module.BUNDLED_LOCAL_QDRANT_URL
     assert any(command[:6] == ["docker", "compose", "-f", f"{target.as_posix()}/docker-compose.yml", "up", "-d"] for command in commands)
-    assert any("Using bundled local dependency stack defaults for DATABASE_URL, REDIS_URL, and QDRANT_URL." == message for message in outputs)
+    assert any("Using bundled local dependency stack defaults for DATABASE_URL, REDIS_URL, QDRANT_URL." == message for message in outputs)
 
 
 def test_prepare_dependency_services_accepts_wrapped_loopback_database_url(tmp_path: Path, monkeypatch) -> None:
@@ -316,9 +316,9 @@ def test_prepare_dependency_services_accepts_wrapped_loopback_database_url(tmp_p
         "QDRANT_URL": "http://127.0.0.1:6333",
     }
 
-    monkeypatch.setattr(install_module, "_local_dependency_services_reachable", lambda values: False)
+    monkeypatch.setattr(install_module, "_tcp_endpoint_reachable", lambda host, port, timeout_seconds=1.0: False)
     monkeypatch.setattr(install_module, "_wait_for_local_dependency_services", lambda values, output, timeout_seconds=60.0: True)
-    monkeypatch.setattr(install_module, "_docker_available", lambda **kwargs: True)
+    monkeypatch.setattr(install_module, "_ensure_docker_available", lambda **kwargs: True)
 
     updated_env_values = install_module._prepare_dependency_services(
         env_values,
@@ -344,6 +344,51 @@ def test_prepare_dependency_services_accepts_wrapped_loopback_database_url(tmp_p
     assert all("Dependency endpoints are not loopback-only; skipping bundled local dependency bootstrap." != message for message in outputs)
 
 
+def test_prepare_dependency_services_starts_only_missing_services(tmp_path: Path, monkeypatch) -> None:
+    outputs: list[str] = []
+    commands: list[list[str]] = []
+    target = tmp_path / "target"
+    target.mkdir()
+    env_values = {
+        "DATABASE_URL": "postgresql+psycopg://agent_sam_user:custom@127.0.0.1:5432/agent_sam",
+        "REDIS_URL": "redis://127.0.0.1:6379/0",
+        "QDRANT_URL": "http://127.0.0.1:6333",
+    }
+
+    def fake_reachable(host: str, port: int, timeout_seconds: float = 1.0) -> bool:
+        return port == 6379
+
+    monkeypatch.setattr(install_module, "_tcp_endpoint_reachable", fake_reachable)
+    monkeypatch.setattr(install_module, "_wait_for_local_dependency_services", lambda values, output, timeout_seconds=60.0: True)
+    monkeypatch.setattr(install_module, "_ensure_docker_available", lambda **kwargs: True)
+
+    updated_env_values = install_module._prepare_dependency_services(
+        env_values,
+        target=target,
+        options=install_module.InstallOptions(
+            target=target,
+            dry_run=False,
+            non_interactive=True,
+            skip_nginx=True,
+            skip_start=True,
+            local=False,
+            production=True,
+        ),
+        prompt=lambda text: "",
+        output=outputs.append,
+        command_runner=lambda command, **kwargs: commands.append(list(command)) or subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+        is_root=True,
+    )
+
+    assert updated_env_values is not None
+    assert updated_env_values["DATABASE_URL"] == install_module.BUNDLED_LOCAL_DATABASE_URL
+    assert updated_env_values["REDIS_URL"] == env_values["REDIS_URL"]
+    assert updated_env_values["QDRANT_URL"] == install_module.BUNDLED_LOCAL_QDRANT_URL
+    assert any(command == ["docker", "compose", "-f", f"{target.as_posix()}/docker-compose.yml", "up", "-d", "postgres", "qdrant"] for command in commands)
+    assert all("redis" not in command[6:] for command in commands if command[:6] == ["docker", "compose", "-f", f"{target.as_posix()}/docker-compose.yml", "up", "-d"])
+    assert any("Using bundled local dependency stack defaults for DATABASE_URL, QDRANT_URL." == message for message in outputs)
+
+
 def test_prepare_dependency_services_installs_docker_when_missing_on_linux(tmp_path: Path, monkeypatch) -> None:
     outputs: list[str] = []
     commands: list[list[str]] = []
@@ -357,7 +402,7 @@ def test_prepare_dependency_services_installs_docker_when_missing_on_linux(tmp_p
     docker_availability = iter([False, True])
 
     monkeypatch.setattr(install_module, "detect_os_name", lambda: "Linux")
-    monkeypatch.setattr(install_module, "_local_dependency_services_reachable", lambda values: False)
+    monkeypatch.setattr(install_module, "_tcp_endpoint_reachable", lambda host, port, timeout_seconds=1.0: False)
     monkeypatch.setattr(install_module, "_wait_for_local_dependency_services", lambda values, output, timeout_seconds=60.0: True)
     monkeypatch.setattr(install_module, "_docker_available", lambda **kwargs: next(docker_availability))
     monkeypatch.setattr(
@@ -406,7 +451,7 @@ def test_prepare_dependency_services_fails_cleanly_when_docker_is_unavailable(tm
         "QDRANT_URL": "http://127.0.0.1:6333",
     }
 
-    monkeypatch.setattr(install_module, "_local_dependency_services_reachable", lambda values: False)
+    monkeypatch.setattr(install_module, "_tcp_endpoint_reachable", lambda host, port, timeout_seconds=1.0: False)
     monkeypatch.setattr(install_module, "_ensure_docker_available", lambda **kwargs: False)
 
     updated_env_values = install_module._prepare_dependency_services(
@@ -428,7 +473,7 @@ def test_prepare_dependency_services_fails_cleanly_when_docker_is_unavailable(tm
     )
 
     assert updated_env_values is None
-    assert any("Local Postgres, Redis, or Qdrant services are not reachable on the configured loopback URLs." == message for message in outputs)
+    assert any(message.startswith("Local dependency services are not reachable on the configured loopback URLs:") for message in outputs)
 
 
 def test_build_one_line_install_command_renders_remote_bootstrap_command() -> None:

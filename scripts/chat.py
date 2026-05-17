@@ -51,6 +51,8 @@ _BULK_CANCEL_PHRASES = frozenset({
     "delete them", "cancel them", "remove them",
     "clear all", "cancel all", "delete all", "remove all",
     "clear queue", "cancel all tasks", "delete all tasks", "remove all tasks",
+    "close them", "close all", "close them all", "stop all", "stop them",
+    "stop all tasks", "kill all", "kill all tasks",
 })
 
 
@@ -460,16 +462,17 @@ async def _main() -> None:
         "Results appear automatically. Type /help for commands."
     )
 
-    # Clean up stale paused subtasks from previous sessions
+    # Clean up ALL stale tasks from previous sessions (paused subtasks + stuck running tasks)
     try:
         from db.task_queue import cancel_task, list_task_queue
         async with session_factory() as session:
-            old = await list_task_queue(session, statuses=("paused",), limit=50)
-            stale = [t for t in old if t.parent_task_id is not None]
-            for t in stale:
+            stale_tasks = await list_task_queue(session, statuses=("paused", "running"), limit=100)
+            count = 0
+            for t in stale_tasks:
                 await cancel_task(session, task_id=t.id)
-            if stale:
-                _print_agent(f"Cleaned up {len(stale)} stale paused subtasks.")
+                count += 1
+            if count:
+                _print_agent(f"Cleaned up {count} stale tasks from previous sessions.")
     except Exception:
         pass
 

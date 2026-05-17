@@ -1371,6 +1371,14 @@ class AgentGatewayService:
             "remove them",
             "delete those",
             "cancel those",
+            "close them",
+            "close all",
+            "close them all",
+            "stop all",
+            "stop them",
+            "stop all tasks",
+            "kill all",
+            "kill all tasks",
         )
         return any(phrase in normalized_text for phrase in phrases)
 

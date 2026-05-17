@@ -115,11 +115,13 @@ def _make_incoming(text: str, settings: Any) -> Any:
 
 
 async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, settings: Any) -> None:
-    from db.models import Approval, Message, Task, ToolCall
+    from db.models import Approval, Message, Task, TaskStep, ToolCall
     from sqlalchemy import select
 
     deadline = asyncio.get_event_loop().time() + TASK_POLL_TIMEOUT
-    last_seen = 0
+    seen_msg_ids: set[str] = set()
+    seen_tc_ids: set[str] = set()
+    seen_step_ids: set[str] = set()
     printed_approval = False
 
     while asyncio.get_event_loop().time() < deadline:
@@ -130,13 +132,62 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
                 if task is None:
                     break
 
-                result = await session.execute(
-                    select(Message)
-                    .where(Message.task_id == task_id, Message.role == "assistant")
-                    .order_by(Message.created_at.asc())
+                # ── Stream step progress ──────────────────────────────
+                steps_result = await session.execute(
+                    select(TaskStep)
+                    .where(TaskStep.task_id == task_id)
+                    .order_by(TaskStep.position.asc())
                 )
-                messages = list(result.scalars().all())
+                steps = list(steps_result.scalars().all())
+                for step in steps:
+                    sid = str(step.id)
+                    status_key = f"{sid}:{step.status}"
+                    if status_key in seen_step_ids:
+                        continue
+                    seen_step_ids.add(status_key)
+                    meta = step.metadata_json if isinstance(step.metadata_json, dict) else {}
+                    tool = meta.get("tool_name") or ""
+                    cmd = meta.get("command") or ""
 
+                    if step.status == "running":
+                        if cmd:
+                            print(f"  \033[90m  $ {cmd[:100]}\033[0m")
+                        else:
+                            print(f"  \033[90m  → Step {step.position}: {step.title[:70]}\033[0m")
+
+                # ── Stream tool call outputs ──────────────────────────
+                tc_result = await session.execute(
+                    select(ToolCall)
+                    .where(ToolCall.task_id == task_id)
+                    .order_by(ToolCall.created_at.asc())
+                )
+                tool_calls = list(tc_result.scalars().all())
+                for tc in tool_calls:
+                    tcid = str(tc.id)
+                    status_key = f"{tcid}:{tc.status}"
+                    if status_key in seen_tc_ids:
+                        continue
+                    seen_tc_ids.add(status_key)
+                    inp = tc.input_payload if isinstance(tc.input_payload, dict) else {}
+                    cmd = inp.get("command", "")
+
+                    if tc.status == "running" and cmd:
+                        print(f"  \033[90m  $ {cmd[:100]}\033[0m")
+                    elif tc.status == "completed":
+                        out = (tc.output_text or "")[:300]
+                        if cmd:
+                            print(f"  \033[32m  ✓ $ {cmd[:80]}\033[0m")
+                        if out.strip():
+                            for line in out.strip().splitlines()[:8]:
+                                print(f"  \033[90m    {line[:100]}\033[0m")
+                    elif tc.status == "failed":
+                        err = (tc.stderr_text or tc.output_text or "")[:200]
+                        print(f"  \033[31m  ✗ $ {cmd[:80]}\033[0m")
+                        if err.strip():
+                            for line in err.strip().splitlines()[:4]:
+                                print(f"  \033[31m    {line[:100]}\033[0m")
+
+                # ── Check for approvals ───────────────────────────────
                 if task.status == "paused" and not printed_approval:
                     ap_result = await session.execute(
                         select(Approval)
@@ -155,23 +206,35 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
                         printed_approval = True
                         continue
 
-                new_msgs = messages[last_seen:]
-                for msg in new_msgs:
+                # ── Print final result messages ───────────────────────
+                msg_result = await session.execute(
+                    select(Message)
+                    .where(Message.task_id == task_id, Message.role == "assistant")
+                    .order_by(Message.created_at.asc())
+                )
+                messages = list(msg_result.scalars().all())
+                for msg in messages:
+                    mid = str(msg.id)
+                    if mid in seen_msg_ids:
+                        continue
                     stage = (msg.metadata_json or {}).get("stage", "")
                     if stage == "report_result":
+                        seen_msg_ids.add(mid)
                         _print_result_block(task.title, msg.content, task.status)
-                last_seen = len(messages)
 
+                # ── Check terminal status ─────────────────────────────
                 if task.status in {"completed", "failed", "cancelled"}:
-                    if last_seen < len(messages):
-                        last_result = next(
+                    # Print final result if we haven't seen it yet
+                    if not seen_msg_ids:
+                        last = next(
                             (m for m in reversed(messages)
                              if (m.metadata_json or {}).get("stage") == "report_result"),
                             messages[-1] if messages else None,
                         )
-                        if last_result:
-                            _print_result_block(task.title, last_result.content, task.status)
+                        if last:
+                            _print_result_block(task.title, last.content, task.status)
                     break
+
                 if printed_approval and task.status not in {"paused"}:
                     printed_approval = False
         except Exception:

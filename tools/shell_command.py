@@ -191,10 +191,10 @@ class ShellCommandTool:
                 )
 
         for risk_level, rules in (
+            ("safe", SAFE_RULES),
             ("dangerous", DANGEROUS_RULES),
             ("high", HIGH_RISK_RULES),
             ("medium", MEDIUM_RISK_RULES),
-            ("safe", SAFE_RULES),
         ):
             matched = self._match_rule(normalized, rules)
             if matched is not None:

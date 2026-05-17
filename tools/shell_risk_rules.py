@@ -78,8 +78,8 @@ HIGH_RISK_RULES = [
     ),
     RiskRule(
         name="service-control",
-        pattern=r"^(systemctl|service|sc|taskkill|kill|pkill|killall|docker|kubectl|helm|terraform|ansible)\b",
-        reason="System and orchestration commands are high risk.",
+        pattern=r"^(systemctl\s+(start|stop|restart|enable|disable|mask|unmask|daemon-reload)|service\s+\S+\s+(start|stop|restart)|sc\s+(start|stop|delete)|taskkill|kill\s|pkill|killall|docker\s+(run|rm|stop|kill|exec)|kubectl\s+(apply|delete|scale)|helm\s+(install|uninstall|upgrade)|terraform\s+(apply|destroy)|ansible)\b",
+        reason="Service-mutating and orchestration commands are high risk.",
     ),
     RiskRule(
         name="git-write-ops",
@@ -178,5 +178,25 @@ SAFE_RULES = [
         name="cat-readonly",
         pattern=r"^cat\s+",
         reason="Read-only file cat is safe.",
+    ),
+    RiskRule(
+        name="firewall-readonly",
+        pattern=r"^(sudo\s+)?(iptables\s+-L|iptables\s+--list|ufw\s+status|nft\s+list)",
+        reason="Read-only firewall inspection is safe.",
+    ),
+    RiskRule(
+        name="service-readonly",
+        pattern=r"^(systemctl\s+(status|is-active|is-enabled|list-units|show)|service\s+\S+\s+status|docker\s+(ps|images|logs|inspect)|kubectl\s+(get|describe|logs))\b",
+        reason="Read-only service inspection is safe.",
+    ),
+    RiskRule(
+        name="piped-read-commands",
+        pattern=r"^(systemctl|service|docker|kubectl|ip|ss|netstat|ps|cat|ls|find|grep|head|tail|wc|sort|uniq|awk|sed\s+-n|cut|tr|tee)(\s.*\|.*)?$",
+        reason="Piped read-only commands are safe.",
+    ),
+    RiskRule(
+        name="sudo-read-commands",
+        pattern=r"^sudo\s+(cat|ls|find|grep|head|tail|ps|ss|netstat|ip|systemctl\s+(status|list-units|is-active|show)|journalctl|iptables\s+-L|ufw\s+status|du|df|lsof)\b",
+        reason="Sudo read-only commands are safe.",
     ),
 ]

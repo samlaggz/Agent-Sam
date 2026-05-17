@@ -151,9 +151,9 @@ async def _poll_task_result(task_id: UUID, session_factory: Any, service: Any, s
                 new_msgs = messages[last_seen:]
                 for msg in new_msgs:
                     stage = (msg.metadata_json or {}).get("stage", "")
-                    if stage in {"report_result", "approval_required"}:
+                    if stage == "report_result":
                         _print_result_block(task.title, msg.content, task.status)
-                        last_seen = len(messages)
+                last_seen = len(messages)
 
                 if task.status in {"completed", "failed", "cancelled"}:
                     if last_seen < len(messages):
@@ -405,11 +405,16 @@ async def _main() -> None:
 
     while True:
         try:
-            user_input = input("  \033[33mYou\033[0m: ")
+            raw_input = input("  \033[33mYou\033[0m: ")
         except (EOFError, KeyboardInterrupt):
             print()
             _print_agent("Goodbye.")
             break
+
+        # Join multi-line paste into a single message
+        user_input = " ".join(line.strip() for line in raw_input.splitlines() if line.strip())
+        if not user_input:
+            continue
 
         try:
             await _handle_line(user_input, service, settings, session_factory)

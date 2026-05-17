@@ -214,4 +214,89 @@ SAFE_RULES = [
         pattern=r"^sudo\s+(cat|ls|find|grep|head|tail|ps|ss|netstat|ip|systemctl\s+(status|list-units|is-active|show)|journalctl|iptables\s+-L|ufw\s+status|du|df|lsof)\b",
         reason="Sudo read-only commands are safe.",
     ),
+    RiskRule(
+        name="systemctl-mutating",
+        pattern=r"^systemctl\s+(start|stop|restart|reload|enable|disable|daemon-reload)\b",
+        reason="Service management is safe in admin mode.",
+    ),
+    RiskRule(
+        name="service-mutating",
+        pattern=r"^service\s+\S+\s+(start|stop|restart|reload)\b",
+        reason="Service management is safe in admin mode.",
+    ),
+    RiskRule(
+        name="ln-symlink",
+        pattern=r"^ln\s+",
+        reason="Creating symlinks is safe in admin mode.",
+    ),
+    RiskRule(
+        name="rm-targeted",
+        pattern=r"^rm\s+(-f\s+)?/etc/nginx/(sites-enabled|sites-available)/\S+",
+        reason="Removing specific nginx config files is safe.",
+    ),
+    RiskRule(
+        name="mkdir-create",
+        pattern=r"^mkdir\s+",
+        reason="Creating directories is safe.",
+    ),
+    RiskRule(
+        name="cp-copy",
+        pattern=r"^cp\s+",
+        reason="Copying files is safe in admin mode.",
+    ),
+    RiskRule(
+        name="mv-move",
+        pattern=r"^mv\s+",
+        reason="Moving files is safe in admin mode.",
+    ),
+    RiskRule(
+        name="chmod-chown",
+        pattern=r"^(chmod|chown)\s+",
+        reason="Permission changes are safe in admin mode.",
+    ),
+    RiskRule(
+        name="apt-install",
+        pattern=r"^apt(-get)?\s+(install|update|upgrade)\b",
+        reason="Package management is safe in admin mode.",
+    ),
+    RiskRule(
+        name="certbot-run",
+        pattern=r"^certbot\s+",
+        reason="Certbot SSL management is safe in admin mode.",
+    ),
+    RiskRule(
+        name="php-artisan",
+        pattern=r"^php\s+artisan\b",
+        reason="Laravel artisan commands are safe.",
+    ),
+    RiskRule(
+        name="npm-yarn-commands",
+        pattern=r"^(npm|yarn|pnpm)\s+(install|run|build|start)\b",
+        reason="Node.js package commands are safe in admin mode.",
+    ),
+    RiskRule(
+        name="composer-commands",
+        pattern=r"^(composer|php\s+composer)\s+(install|update|dump-autoload)\b",
+        reason="PHP Composer commands are safe in admin mode.",
+    ),
+    RiskRule(
+        name="git-pull-clone",
+        pattern=r"^git\s+(pull|clone|fetch)\b",
+        reason="Git fetch operations are safe.",
+    ),
+    RiskRule(
+        name="curl-write",
+        pattern=r"^curl\s+",
+        reason="Curl requests are safe in admin mode.",
+    ),
+    RiskRule(
+        name="echo-redirect",
+        pattern=r"^echo\s+",
+        reason="Echo commands are safe.",
+    ),
+    RiskRule(
+        name="sed-inline",
+        pattern=r"^sed\s+",
+        reason="Sed text processing is safe in admin mode.",
+    ),
 ]

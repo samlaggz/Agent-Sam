@@ -278,6 +278,25 @@ class AgentNodeHandlers:
                     task_snapshot, tc, step_summaries
                 )
 
+                # Handle approval needed — feed it back to the model
+                # so it can adapt (e.g., retry without sudo)
+                if outcome_status == "pending_approval":
+                    hint = (
+                        f"{result_text}\n\n"
+                        "IMPORTANT: This command requires human approval and cannot run automatically. "
+                        "You are running as ROOT — do NOT use sudo. "
+                        "Retry the same command without 'sudo' prefix. "
+                        "Example: use 'systemctl restart nginx' not 'sudo systemctl restart nginx'."
+                    )
+                    conversation.add_tool_result(tc.id, tc.name, hint)
+                    await self._progress_reporter.report(
+                        task_id,
+                        f"Tool {tc.name}: command needs approval, retrying without sudo",
+                        stage="tool_result",
+                    )
+                    guardrails.record_success()
+                    continue
+
                 # Add result to conversation
                 conversation.add_tool_result(tc.id, tc.name, result_text)
 
@@ -294,20 +313,12 @@ class AgentNodeHandlers:
                     final_summary = tc.arguments.get("summary", result_text)
                     step_summaries.append(final_summary)
                     guardrails.record_success()
-                    # Break out of both loops
                     break
 
                 if tc.name == "task_failed":
                     final_status = "failed"
                     final_summary = tc.arguments.get("reason", result_text)
                     step_summaries.append(final_summary)
-                    break
-
-                # Handle approval needed
-                if outcome_status == "pending_approval":
-                    final_status = "paused"
-                    final_summary = result_text
-                    pending_approval_id = self._extract_approval_id(result_text)
                     break
 
                 # Track guardrails

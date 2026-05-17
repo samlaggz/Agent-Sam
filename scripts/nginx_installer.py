@@ -68,8 +68,11 @@ def install_nginx_config(
         if reload_result.returncode != 0:
             if reload_result.stderr:
                 output(reload_result.stderr.strip())
-            output(f"Failed: {format_command(reload_command)}")
-            return False
+            output(
+                "nginx configuration was installed, but nginx could not be reloaded automatically. "
+                "Inspect systemctl status nginx and journalctl -xeu nginx, then reload or restart nginx manually."
+            )
+            return True
         output("nginx configuration installed and applied.")
         return True
     finally:

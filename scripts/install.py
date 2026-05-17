@@ -839,7 +839,13 @@ def _prepare_dependency_services(
         return env_values
 
     output("Local Postgres, Redis, or Qdrant services are not reachable on the configured loopback URLs.")
-    if not _docker_available(command_runner=command_runner, is_root=is_root):
+    if not _ensure_docker_available(
+        prompt=prompt,
+        output=output,
+        command_runner=command_runner,
+        is_root=is_root,
+        non_interactive=options.non_interactive,
+    ):
         output(
             "Install Docker and run "
             f"docker compose -f {target.as_posix()}/docker-compose.yml up -d postgres redis qdrant, "
@@ -869,10 +875,14 @@ def _prepare_dependency_services(
     }
     output("Using bundled local dependency stack defaults for DATABASE_URL, REDIS_URL, and QDRANT_URL.")
 
+    compose_base_command = _resolve_docker_compose_base_command(command_runner=command_runner, is_root=is_root)
+    if compose_base_command is None:
+        output("Docker Compose is unavailable after Docker setup. Install the compose plugin and retry.")
+        return None
+
     compose_command = _privileged_command(
         [
-            "docker",
-            "compose",
+            *compose_base_command,
             "-f",
             f"{target.as_posix()}/docker-compose.yml",
             "up",
@@ -937,6 +947,130 @@ def _docker_available(*, command_runner: CommandRunner, is_root: bool) -> bool:
     except FileNotFoundError:
         return False
     return result.returncode == 0
+
+
+def _ensure_docker_available(
+    *,
+    prompt: PromptFunc,
+    output: OutputFunc,
+    command_runner: CommandRunner,
+    is_root: bool,
+    non_interactive: bool,
+) -> bool:
+    if _docker_available(command_runner=command_runner, is_root=is_root):
+        return True
+
+    docker_installed = shutil.which("docker") is not None
+    if detect_os_name() != "Linux":
+        output("Automatic Docker setup is only supported on Linux hosts.")
+        return False
+
+    should_configure = True
+    if not non_interactive:
+        question = "Start Docker now?" if docker_installed else "Install Docker now?"
+        should_configure = _prompt_yes_no(prompt, question, default=True)
+    if not should_configure:
+        return False
+
+    if not docker_installed:
+        if not _install_docker_packages(output=output, command_runner=command_runner, is_root=is_root):
+            return False
+
+    if not _start_docker_service(output=output, command_runner=command_runner, is_root=is_root):
+        return False
+
+    if not _docker_available(command_runner=command_runner, is_root=is_root):
+        output("Docker is still unavailable after the automatic setup attempt.")
+        return False
+    output("Docker is available.")
+    return True
+
+
+def _install_docker_packages(*, output: OutputFunc, command_runner: CommandRunner, is_root: bool) -> bool:
+    package_manager = _detect_linux_package_manager()
+    if package_manager is None:
+        output("Automatic Docker installation is not supported on this Linux distribution.")
+        return False
+
+    output(f"Installing Docker packages with {package_manager}.")
+
+    if package_manager == "apt-get":
+        if _run_with_output(
+            _privileged_command(["apt-get", "update"], is_root=is_root),
+            command_runner=command_runner,
+            output=output,
+            dry_run=False,
+        ).returncode != 0:
+            return False
+        install_variants = (
+            ["docker.io", "docker-compose-plugin"],
+            ["docker.io", "docker-compose-v2"],
+            ["docker.io", "docker-compose"],
+        )
+    elif package_manager == "dnf":
+        install_variants = (
+            ["docker", "docker-compose-plugin"],
+            ["moby-engine", "docker-compose-plugin"],
+            ["docker", "docker-compose"],
+        )
+    else:
+        install_variants = (
+            ["docker", "docker-compose-plugin"],
+            ["docker", "docker-compose"],
+        )
+
+    package_manager_command = [package_manager, "install", "-y"]
+    for packages in install_variants:
+        if _run_with_output(
+            _privileged_command([*package_manager_command, *packages], is_root=is_root),
+            command_runner=command_runner,
+            output=output,
+            dry_run=False,
+        ).returncode == 0:
+            return True
+    return False
+
+
+def _start_docker_service(*, output: OutputFunc, command_runner: CommandRunner, is_root: bool) -> bool:
+    if shutil.which("systemctl") is not None:
+        return (
+            _run_with_output(
+                _privileged_command(["systemctl", "enable", "--now", "docker"], is_root=is_root),
+                command_runner=command_runner,
+                output=output,
+                dry_run=False,
+            ).returncode
+            == 0
+        )
+    if shutil.which("service") is not None:
+        return (
+            _run_with_output(
+                _privileged_command(["service", "docker", "start"], is_root=is_root),
+                command_runner=command_runner,
+                output=output,
+                dry_run=False,
+            ).returncode
+            == 0
+        )
+    return True
+
+
+def _detect_linux_package_manager() -> str | None:
+    for candidate in ("apt-get", "dnf", "yum"):
+        if shutil.which(candidate) is not None:
+            return candidate
+    return None
+
+
+def _resolve_docker_compose_base_command(*, command_runner: CommandRunner, is_root: bool) -> list[str] | None:
+    for candidate in (["docker", "compose"], ["docker-compose"]):
+        try:
+            result = command_runner(_privileged_command([*candidate, "version"], is_root=is_root), capture_output=True)
+        except FileNotFoundError:
+            continue
+        if result.returncode == 0:
+            return candidate
+    return None
 
 
 def _extract_host_port(raw_value: str, *, default_port: int) -> tuple[str, int] | None:

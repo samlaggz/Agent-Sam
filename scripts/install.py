@@ -379,6 +379,7 @@ def _collect_production_env_updates(
             prompt=prompt,
             non_interactive=options.non_interactive,
             dry_run=dry_run,
+            output=output,
         )
         if resolved_value is None:
             output(f"{key} must be set to a non-placeholder value for production installation.")
@@ -509,6 +510,7 @@ def _resolve_llm_updates(
             prompt=prompt,
             non_interactive=non_interactive,
             dry_run=False,
+            output=output,
         )
         if model_value is None:
             return None
@@ -537,6 +539,7 @@ def _resolve_llm_updates(
             prompt=prompt,
             non_interactive=non_interactive,
             dry_run=False,
+            output=output,
         )
         if base_url is None:
             return None
@@ -596,6 +599,7 @@ def _resolve_specialist_runtime_updates(
             prompt=prompt,
             non_interactive=non_interactive,
             dry_run=dry_run,
+            output=output,
         )
         if openrouter_base_url is None:
             return None
@@ -609,6 +613,7 @@ def _resolve_specialist_runtime_updates(
             prompt=prompt,
             non_interactive=non_interactive,
             dry_run=dry_run,
+            output=output,
         )
         if resolved is None:
             return None
@@ -622,6 +627,7 @@ def _resolve_specialist_runtime_updates(
             prompt=prompt,
             non_interactive=non_interactive,
             dry_run=dry_run,
+            output=output,
         )
         if resolved is None:
             return None
@@ -652,6 +658,7 @@ def _resolve_value(
     prompt: PromptFunc,
     non_interactive: bool,
     dry_run: bool,
+    output: OutputFunc,
 ) -> str | None:
     if dry_run:
         return current_value or default_value
@@ -664,10 +671,11 @@ def _resolve_value(
         return resolved
 
     prompt_default = current_value or default_value
-    value = prompt(f"{key} [{prompt_default}]: ").strip() or prompt_default
-    if "CHANGE_ME" in value:
-        return None
-    return value
+    while True:
+        value = prompt(f"{key} [{prompt_default}]: ").strip() or prompt_default
+        if value and "CHANGE_ME" not in value:
+            return value
+        output(f"{key} must be set to a real value and cannot keep the placeholder.")
 
 
 def _resolve_secret(

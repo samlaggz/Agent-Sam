@@ -142,6 +142,63 @@ def test_run_install_interactive_writes_env_without_printing_secret(tmp_path: Pa
     assert all("openrouter-secret" not in message for message in outputs)
 
 
+def test_run_install_interactive_reprompts_when_database_url_keeps_placeholder(tmp_path: Path, monkeypatch) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    (repo_root / ".env.example").write_text(
+        "APP_ENV=production\n"
+        "DATABASE_URL=postgresql+psycopg://agent_sam_user:CHANGE_ME@127.0.0.1:5432/agent_sam\n"
+        "REDIS_URL=redis://127.0.0.1:6379/0\n"
+        "QDRANT_URL=http://127.0.0.1:6333\n"
+        "ENABLED_GATEWAYS=cli\n"
+        "LITELLM_MODEL=openai/gpt-4o-mini\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+    outputs: list[str] = []
+    prompt_values = iter(
+        [
+            "",
+            "",
+            "",
+            "",
+            "postgresql+psycopg://agent_sam_user:real@127.0.0.1:5432/agent_sam",
+            "",
+            "",
+            "cli",
+            "2",
+        ]
+        + [""] * 40
+    )
+
+    monkeypatch.setattr(install_module, "detect_os_name", lambda: "Linux")
+    monkeypatch.setattr(install_module, "python_version_text", lambda: "3.11.9")
+
+    exit_code = install_module.run_install(
+        install_module.InstallOptions(
+            target=target,
+            dry_run=False,
+            non_interactive=False,
+            skip_nginx=True,
+            skip_start=True,
+            local=False,
+            production=True,
+        ),
+        repo_root=repo_root,
+        prompt=lambda text: next(prompt_values),
+        secret_prompt=lambda text: "openai-secret",
+        output=outputs.append,
+        command_runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout="ok", stderr=""),
+    )
+
+    env_text = (target / ".env").read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "DATABASE_URL=postgresql+psycopg://agent_sam_user:real@127.0.0.1:5432/agent_sam" in env_text
+    assert any("DATABASE_URL must be set to a real value and cannot keep the placeholder." == message for message in outputs)
+
+
 def test_build_one_line_install_command_renders_remote_bootstrap_command() -> None:
     command = install_module.build_one_line_install_command(
         target=Path("/srv/agent-sam"),

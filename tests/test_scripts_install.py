@@ -230,6 +230,7 @@ def test_run_install_starts_services_before_running_production_doctor(tmp_path: 
     )
 
     enable_index = commands.index(["systemctl", "enable", "agent-api", "agent-worker", "agent-telegram"])
+    restart_index = commands.index(["systemctl", "restart", "agent-api", "agent-worker", "agent-telegram"])
     doctor_index = next(
         index
         for index, command in enumerate(commands)
@@ -237,7 +238,7 @@ def test_run_install_starts_services_before_running_production_doctor(tmp_path: 
     )
 
     assert exit_code == 0
-    assert enable_index < doctor_index
+    assert enable_index < restart_index < doctor_index
 
 
 def test_run_install_interactive_writes_env_without_printing_secret(tmp_path: Path, monkeypatch) -> None:

@@ -352,17 +352,17 @@ def _run_production_install(
     else:
         output("Skipping nginx configuration.")
 
-    printer.step("Enabling and starting services")
+    printer.step("Enabling and restarting services")
     if start_services_choice and not options.skip_start:
         for command in (
             _privileged_command(["systemctl", "enable", "agent-api", "agent-worker", "agent-telegram"], is_root=is_root),
-            _privileged_command(["systemctl", "start", "agent-api", "agent-worker", "agent-telegram"], is_root=is_root),
+            _privileged_command(["systemctl", "restart", "agent-api", "agent-worker", "agent-telegram"], is_root=is_root),
             _privileged_command(["systemctl", "status", "agent-api", "agent-worker", "agent-telegram", "--no-pager"], is_root=is_root),
         ):
             if _run_with_output(command, command_runner=command_runner, output=output, dry_run=options.dry_run).returncode != 0:
                 return 1
     else:
-        output("Skipping service enable/start.")
+        output("Skipping service enable/restart.")
 
     printer.step("Running production doctor")
     doctor_command = _command_as_user(

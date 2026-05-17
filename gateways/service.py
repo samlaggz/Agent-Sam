@@ -840,8 +840,21 @@ class AgentGatewayService:
             )
         return serialized
 
+    def _requires_server_action(self, normalized_text: str) -> bool:
+        """Detect messages that MUST become tasks because they describe server problems or request server changes."""
+        error_patterns = (
+            "can't be reached", "took too long", "connection refused", "connection timed out",
+            "err_connection", "err_timed_out", "502 bad gateway", "503 service unavailable",
+            "500 internal", "still not working", "still saying", "still down",
+            "configure", "set up", "set it up", "point it to", "point this to",
+            "reload nginx", "restart nginx", "restart apache",
+        )
+        return any(p in normalized_text for p in error_patterns)
+
     async def _decide_text_intent(self, text: str) -> str:
         normalized_text = self._normalize_text(text)
+        if self._requires_server_action(normalized_text):
+            return "task"
         if self._is_capability_question(normalized_text) or self._is_followup_question(normalized_text):
             return "chat"
         if self._is_current_events_request(normalized_text):
@@ -922,8 +935,11 @@ class AgentGatewayService:
                 "content": (
                     "You classify gateway messages. Return strict JSON only with one key: "
                     "{\"intent\":\"chat\"} or {\"intent\":\"task\"}. "
-                    "Choose task when the user is explicitly asking the agent to perform, queue, investigate, build, fix, or track work. "
-                    "Choose chat for greetings, questions, clarification, explanation, or casual conversation."
+                    "Choose task when the user asks to: run commands, check/fix server state, configure services, "
+                    "find/list/create/modify files or folders, point domains, restart services, diagnose errors, "
+                    "or any action that requires shell access or server changes. "
+                    "Choose chat ONLY for: greetings, 'what are you', capability questions, simple clarifications, thanks. "
+                    "When in doubt, choose task."
                 ),
             },
             {"role": "user", "content": text.strip()},
@@ -935,13 +951,14 @@ class AgentGatewayService:
             {
                 "role": "system",
                 "content": (
-                    "You are Agent Sam — a private AI agent OS running on Linux as root. Reply concisely. "
-                    "You have FULL root/sudo access to the entire Linux server: all files, all folders, all processes, all services. "
-                    "Do NOT say you cannot access something. Do NOT ask which system the user means. The server is Ubuntu 24.04. "
-                    "Do not promise you are doing a task unless a tracked task already exists. "
-                    "When asked what model you are: 'I am Agent Sam powered by OpenRouter with specialist agents'. Never say GPT-4. "
+                    "You are Agent Sam — a private AI agent OS. Reply concisely. "
+                    "CRITICAL: NEVER output shell commands, code blocks, or say 'Running:' in chat replies. "
+                    "You are the CHAT layer only. If the user needs ANY server action, say 'I will queue that as a task'. "
+                    "Do NOT pretend to run commands. Do NOT write bash/code blocks. "
+                    "You may ONLY: answer from conversation history, confirm previous results, ask clarifying questions, or explain capabilities. "
+                    "When asked what model: 'I am Agent Sam powered by OpenRouter with specialist agents'. "
                     f"Web research is {web_access_state}. "
-                    "Use conversation history for follow-ups. Be direct — no filler."
+                    "Use conversation history for follow-ups. Be direct."
                 ),
             },
         ]
@@ -996,6 +1013,15 @@ class AgentGatewayService:
         if not normalized_text:
             return False
         words = normalized_text.split()
+        # Server-action keywords should NEVER be classified as chat
+        server_action_keywords = (
+            "nginx", "apache", "systemctl", "pm2", "docker", "domain", "ssl", "certificate",
+            "firewall", "port", "dns", "config", "restart", "reload", "site", "server",
+            "can't be reached", "connection refused", "timed out", "err_", "502", "503", "500",
+            "point", "configure", "setup", "install", "deploy",
+        )
+        if any(kw in normalized_text for kw in server_action_keywords):
+            return False
         if _CHAT_GREETING_PATTERN.match(normalized_text) and len(words) <= 5:
             return True
         if normalized_text.endswith("?") and not self._looks_like_task_request_question(normalized_text):

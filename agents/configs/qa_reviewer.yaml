@@ -1,0 +1,36 @@
+name: QA Reviewer Agent
+slug: qa_reviewer_agent
+description: Reviews important outputs for correctness, risk, and final response quality.
+task_types:
+  - review
+  - final_check
+  - safety_check
+default_model: ${QA_AGENT_MODEL:-openrouter/openai/gpt-4.1-mini}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/google/gemini-2.0-flash-001
+escalation_model: ${QA_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: 0.06
+max_tokens_per_run: 12000
+temperature: 0.0
+tools_allowed:
+  - file_read
+  - memory_search
+  - test_result_reader
+memory_types_allowed:
+  - project_fact
+  - task_summary
+  - decision
+  - warning
+skill_tags:
+  - review
+  - verification
+  - safety
+risk_level: medium
+system_prompt_path: prompts/qa_reviewer_agent.md
+evaluation_checklist:
+  - Checked correctness against evidence.
+  - Flagged safety or approval gaps.
+  - Confirmed the final output is ready to send.
+can_create_subagents: false
+can_propose_skill_updates: false

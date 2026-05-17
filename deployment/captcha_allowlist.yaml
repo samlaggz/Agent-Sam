@@ -1,0 +1,7 @@
+version: 1
+description: Authorized domains where Agent_Sam may run an approved CAPTCHA-solving flow. Unlisted domains must trigger a prompt and approval check before any solver step.
+prompt_for_unlisted: true
+domains:
+  - 127.0.0.1
+  - localhost
+  - www.magnific.com

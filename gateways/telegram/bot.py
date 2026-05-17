@@ -1,111 +1,165 @@
+from __future__ import annotations
+
+import asyncio
 import logging
+from contextlib import suppress
+from uuid import UUID
 
 from telegram import Update
+from telegram.error import Conflict, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from app.config import Settings
-from db.session import AsyncSessionLocal
-from gateways.service import AgentGatewayService, IncomingGatewayMessage
+from gateways.base import Gateway, GatewayChat, GatewayHealth, GatewayResponse, GatewayUser, IncomingGatewayMessage, OutgoingGatewayMessage
+from gateways.service import AgentGatewayService
 
 
 logger = logging.getLogger(__name__)
 
-
-def _get_gateway_service(context: ContextTypes.DEFAULT_TYPE) -> AgentGatewayService:
-    return context.application.bot_data["gateway_service"]
-
-
-def _build_incoming_message(update: Update) -> IncomingGatewayMessage | None:
-    message = update.effective_message
-    if message is None or message.text is None:
-        return None
-
-    return IncomingGatewayMessage(
-        text=message.text,
-        source="telegram",
-        source_user_id=str(update.effective_user.id) if update.effective_user is not None else None,
-        source_chat_id=str(update.effective_chat.id) if update.effective_chat is not None else None,
-        source_message_id=str(message.message_id),
-        source_username=update.effective_user.username if update.effective_user is not None else None,
-    )
-
-
-async def _reply_with_gateway_response(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    command: str | None = None,
-) -> None:
-    message = update.effective_message
-    incoming = _build_incoming_message(update)
-    if message is None or incoming is None:
-        return
-
-    service = _get_gateway_service(context)
-
-    try:
-        if command is None:
-            response_text = await service.handle_text_message(incoming)
-        else:
-            response_text = await service.handle_command(command, incoming, list(context.args))
-    except Exception:
-        logger.exception("Telegram gateway request failed")
-        response_text = "Request failed. Check gateway configuration and database connectivity."
-
-    await message.reply_text(response_text)
+SUPPORTED_COMMANDS = (
+    "start",
+    "help",
+    "agents",
+    "agent",
+    "route",
+    "models",
+    "budget",
+    "skills",
+    "subagents",
+    "status",
+    "queue",
+    "new",
+    "prioritize",
+    "pause",
+    "resume",
+    "approve",
+    "cancel",
+)
 
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="start")
+class TelegramGateway(Gateway):
+    name = "telegram"
 
+    def __init__(
+        self,
+        *,
+        service: AgentGatewayService,
+        token: str,
+        workspace_id: UUID,
+        user_id: UUID,
+        debug_logging: bool = False,
+    ) -> None:
+        self._service = service
+        self._workspace_id = workspace_id
+        self._user_id = user_id
+        self._debug_logging = debug_logging
+        self._application = Application.builder().token(token).build()
+        self._started = False
+        self._polling_stop_requested = False
+        self._register_handlers()
 
-async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="new")
+    async def start(self) -> None:
+        logger.info("Telegram gateway starting")
+        await self._application.initialize()
+        await self._application.start()
+        if self._application.updater is None:
+            raise RuntimeError("Telegram gateway could not start polling because the updater is unavailable.")
+        await self._application.updater.start_polling(error_callback=self._handle_polling_error)
+        self._started = True
+        logger.info("Telegram gateway ready")
+        logger.info("Listening for Telegram messages")
 
+    async def stop(self) -> None:
+        if not self._started:
+            return
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="status")
+        logger.info("Telegram gateway stopping")
+        if self._application.updater is not None:
+            with suppress(asyncio.CancelledError):
+                await self._application.updater.stop()
+        with suppress(asyncio.CancelledError):
+            await self._application.stop()
+        with suppress(asyncio.CancelledError):
+            await self._application.shutdown()
+        self._started = False
+        self._polling_stop_requested = False
+        logger.info("Telegram gateway stopped")
 
+    async def send_message(self, message: OutgoingGatewayMessage) -> None:
+        if not message.gateway_chat_id:
+            raise ValueError("Telegram messages require gateway_chat_id.")
+        await self._application.bot.send_message(
+            chat_id=message.gateway_chat_id,
+            text=message.text,
+            reply_to_message_id=message.reply_to_message_id,
+        )
 
-async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="queue")
+    async def health_check(self) -> GatewayHealth:
+        return GatewayHealth(status="ready" if self._started else "stopped")
 
+    def _handle_polling_error(self, error: TelegramError) -> None:
+        if isinstance(error, Conflict):
+            if self._polling_stop_requested:
+                return
+            self._polling_stop_requested = True
+            logger.error(
+                "Telegram polling conflict: another bot instance is already using this token. Stop the other instance before starting this gateway."
+            )
+            asyncio.get_running_loop().create_task(self.stop())
+            return
 
-async def prioritize_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="prioritize")
+        logger.error("Telegram polling failed: %s", error)
 
+    def _register_handlers(self) -> None:
+        for command_name in SUPPORTED_COMMANDS:
+            self._application.add_handler(CommandHandler(command_name, self._handle_update))
+        self._application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_update))
 
-async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="pause")
+    async def _handle_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        del context
 
+        incoming = self._build_incoming_message(update)
+        message = update.effective_message
+        if incoming is None or message is None:
+            return
 
-async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="resume")
+        logger.info(
+            "Telegram message received from chat %s user %s",
+            incoming.gateway_chat.gateway_chat_id,
+            incoming.gateway_user.gateway_user_id,
+        )
+        if self._debug_logging:
+            logger.debug("Telegram message text: %s", incoming.text)
 
+        try:
+            response = await self._service.handle_incoming_message(incoming)
+        except Exception:
+            logger.exception("Telegram gateway request failed")
+            response = GatewayResponse(
+                text="Request failed. Check gateway configuration and database connectivity.",
+            )
 
-async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="approve")
+        if response.should_reply:
+            await message.reply_text(response.text)
 
+    def _build_incoming_message(self, update: Update) -> IncomingGatewayMessage | None:
+        message = update.effective_message
+        if message is None or message.text is None or update.effective_chat is None or update.effective_user is None:
+            return None
 
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context, command="cancel")
-
-
-async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _reply_with_gateway_response(update, context)
-
-
-def build_application(settings: Settings) -> Application:
-    application = Application.builder().token(settings.telegram_bot_token).build()
-    application.bot_data["gateway_service"] = AgentGatewayService(settings, AsyncSessionLocal)
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("new", new_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("queue", queue_command))
-    application.add_handler(CommandHandler("prioritize", prioritize_command))
-    application.add_handler(CommandHandler("pause", pause_command))
-    application.add_handler(CommandHandler("resume", resume_command))
-    application.add_handler(CommandHandler("approve", approve_command))
-    application.add_handler(CommandHandler("cancel", cancel_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
-    return application
+        return IncomingGatewayMessage(
+            workspace_id=self._workspace_id,
+            user_id=self._user_id,
+            gateway_name=self.name,
+            gateway_user=GatewayUser(
+                gateway_user_id=str(update.effective_user.id),
+                username=update.effective_user.username,
+                display_name=update.effective_user.full_name,
+            ),
+            gateway_chat=GatewayChat(
+                gateway_chat_id=str(update.effective_chat.id),
+                title=getattr(update.effective_chat, "title", None),
+                chat_type=getattr(update.effective_chat, "type", None),
+            ),
+            text=message.text,
+            gateway_message_id=str(message.message_id),
+        )

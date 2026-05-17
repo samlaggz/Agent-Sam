@@ -1,0 +1,23 @@
+name: Log Analysis Agent
+slug: log_analysis_agent
+description: Analyze logs.
+task_types:
+  - diagnostics
+default_model: openrouter/openai/gpt-4.1-mini
+fallback_models: []
+escalation_model: openrouter/anthropic/claude-3.7-sonnet
+max_cost_per_task_usd: 0.05
+max_tokens_per_run: 8000
+temperature: 0.0
+tools_allowed:
+  - file_read
+memory_types_allowed:
+  - project_fact
+skill_tags:
+  - logs
+risk_level: low
+system_prompt_path: prompts/generated/log_analysis_agent.md
+evaluation_checklist:
+  - Checked logs
+can_create_subagents: false
+can_propose_skill_updates: false

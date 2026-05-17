@@ -1,0 +1,32 @@
+name: Router Agent
+slug: router_agent
+description: Selects the cheapest suitable specialist agent and model tier for each task.
+task_types:
+  - routing
+  - agent_selection
+  - model_selection
+default_model: ${ROUTER_AGENT_MODEL:-openrouter/openai/gpt-4.1-mini}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+escalation_model: ${QA_AGENT_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: 0.02
+max_tokens_per_run: 4000
+temperature: 0.0
+tools_allowed:
+  - file_read
+  - memory_search
+memory_types_allowed:
+  - decision
+  - project_fact
+task_summary:
+skill_tags:
+  - routing
+  - model_selection
+risk_level: medium
+system_prompt_path: prompts/router_agent.md
+evaluation_checklist:
+  - Returned valid routing JSON.
+  - Picked the cheapest suitable agent first.
+  - Marked approval when task risk was high.
+can_create_subagents: false
+can_propose_skill_updates: false

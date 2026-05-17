@@ -1,5 +1,5 @@
 [Unit]
-Description=AgentOS Telegram Gateway
+Description=Agent_Sam Telegram Gateway
 Wants=network-online.target
 After=network-online.target
 
@@ -9,7 +9,8 @@ User=__APP_USER__
 Group=__APP_GROUP__
 WorkingDirectory=__APP_DIR__
 EnvironmentFile=__APP_DIR__/.env
-ExecStart=__APP_DIR__/.venv/bin/agent-sam-telegram
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__APP_DIR__/.venv/bin/python -m gateways.telegram.main
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

@@ -21,6 +21,11 @@ class AgentRunResult:
     status: str
     final_summary: str
     approval_id: UUID | None = None
+    routed_agent: str | None = None
+    routed_model: str | None = None
+    routing_reason: str | None = None
+    estimated_cost_usd: float | None = None
+    actual_cost_usd: float | None = None
 
 
 def build_agent_graph(handlers: AgentNodeHandlers):

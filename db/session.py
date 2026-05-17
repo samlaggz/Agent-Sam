@@ -8,7 +8,15 @@ from db.base import Base
 
 def get_engine() -> AsyncEngine:
     settings = get_settings()
-    return create_async_engine(settings.database_url, future=True, pool_pre_ping=True)
+    connect_args: dict[str, object] = {}
+    if settings.database_url.startswith("postgresql"):
+        connect_args["connect_timeout"] = 5
+    return create_async_engine(
+        settings.database_url,
+        future=True,
+        pool_pre_ping=True,
+        connect_args=connect_args,
+    )
 
 
 engine = get_engine()

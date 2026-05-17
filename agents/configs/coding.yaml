@@ -1,0 +1,40 @@
+name: Coding Agent
+slug: coding_agent
+description: Implements code changes, debugging, and refactors with minimal safe edits.
+task_types:
+  - code_edit
+  - debugging
+  - refactor
+  - implementation
+default_model: ${CODING_AGENT_MODEL:-openrouter/openai/gpt-4.1-mini}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/google/gemini-2.0-flash-001
+escalation_model: ${CODING_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: ${MAX_COST_PER_TASK_USD:-0.25}
+max_tokens_per_run: 32000
+temperature: 0.1
+tools_allowed:
+  - safe_shell
+  - file_read
+  - file_write
+  - grep
+  - pytest
+memory_types_allowed:
+  - project_fact
+  - task_summary
+  - skill_note
+  - decision
+  - warning
+skill_tags:
+  - python
+  - backend
+  - refactor
+risk_level: medium
+system_prompt_path: prompts/coding_agent.md
+evaluation_checklist:
+  - Changed the smallest viable code surface.
+  - Preserved existing behavior outside the requested scope.
+  - Ran focused validation after edits.
+can_create_subagents: false
+can_propose_skill_updates: ${ALLOW_SKILL_AUTO_PROPOSAL:-true}

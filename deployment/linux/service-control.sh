@@ -9,11 +9,11 @@ fi
 usage() {
   cat <<'EOF'
 Usage:
-  service-control.sh start <api|worker|telegram|all>
-  service-control.sh stop <api|worker|telegram|all>
-  service-control.sh restart <api|worker|telegram|all>
-  service-control.sh status <api|worker|telegram|all>
-  service-control.sh logs <api|worker|telegram> [journalctl args]
+  service-control.sh start [api|worker|telegram|all]
+  service-control.sh stop [api|worker|telegram|all]
+  service-control.sh restart [api|worker|telegram|all]
+  service-control.sh status [api|worker|telegram|all]
+  service-control.sh logs [api|worker|telegram|all] [journalctl args]
 EOF
 }
 
@@ -37,14 +37,18 @@ resolve_target() {
   esac
 }
 
-if [[ "$#" -lt 2 ]]; then
+if [[ "$#" -lt 1 ]]; then
   usage
   exit 1
 fi
 
 COMMAND="$1"
-TARGET="$2"
-shift 2
+TARGET="${2:-all}"
+if [[ "$#" -ge 2 ]]; then
+  shift 2
+else
+  shift 1
+fi
 
 mapfile -t UNITS < <(resolve_target "${TARGET}") || {
   usage
@@ -56,11 +60,12 @@ case "${COMMAND}" in
     sudo systemctl "${COMMAND}" "${UNITS[@]}"
     ;;
   logs)
-    if [[ "${TARGET}" == "all" ]]; then
-      echo "Logs only support a single service target." >&2
-      exit 1
-    fi
-    sudo journalctl -u "${UNITS[0]}" "$@"
+    journalctl_command=(sudo journalctl)
+    for unit_name in "${UNITS[@]}"; do
+      journalctl_command+=(-u "${unit_name}")
+    done
+    journalctl_command+=("$@")
+    "${journalctl_command[@]}"
     ;;
   *)
     usage

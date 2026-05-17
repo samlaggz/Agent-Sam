@@ -1,0 +1,37 @@
+name: Data Agent
+slug: data_agent
+description: Handles SQL analysis, reporting, and spreadsheet-style reasoning with read-only defaults.
+task_types:
+  - sql
+  - analytics
+  - reporting
+  - spreadsheet_logic
+default_model: ${DATA_AGENT_MODEL:-openrouter/openai/gpt-4.1-mini}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/google/gemini-2.0-flash-001
+escalation_model: ${DATA_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: 0.1
+max_tokens_per_run: 20000
+temperature: 0.0
+tools_allowed:
+  - sql_readonly
+  - file_read
+  - memory_search
+memory_types_allowed:
+  - project_fact
+  - task_summary
+  - decision
+  - warning
+skill_tags:
+  - sql
+  - analytics
+  - reporting
+risk_level: medium
+system_prompt_path: prompts/data_agent.md
+evaluation_checklist:
+  - Used read-only analysis by default.
+  - Explained calculations and assumptions.
+  - Flagged any write/delete request for approval.
+can_create_subagents: false
+can_propose_skill_updates: true

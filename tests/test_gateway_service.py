@@ -1,11 +1,14 @@
+import sys
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from uuid import UUID
 
-from app.config import Settings
 from db.models import Approval, Message, Task, ToolCall, User, Workspace
-from gateways.service import AgentGatewayService, IncomingGatewayMessage
+from db.repositories import create_task
+from gateways.base import GatewayChat, GatewayUser, IncomingGatewayMessage
+from gateways.service import AgentGatewayService
+from tools.shell_command import ShellCommandRequest, ShellCommandTool
 
 
 pytestmark = pytest.mark.asyncio
@@ -16,12 +19,34 @@ def build_gateway_service(
     workspace: Workspace,
     user: User,
 ) -> AgentGatewayService:
-    settings = Settings(
-        telegram_bot_token="test-token",
-        default_workspace_id=workspace.id,
-        default_user_id=user.id,
+    del workspace, user
+    return AgentGatewayService(session_factory)
+
+
+def build_incoming_message(
+    workspace: Workspace,
+    user: User,
+    text: str,
+    *,
+    gateway_name: str = "cli",
+) -> IncomingGatewayMessage:
+    return IncomingGatewayMessage(
+        workspace_id=workspace.id,
+        user_id=user.id,
+        gateway_name=gateway_name,
+        gateway_user=GatewayUser(
+            gateway_user_id=f"{gateway_name}-user-1",
+            username="agent_sam_tester",
+            display_name="Agent Sam Tester",
+        ),
+        gateway_chat=GatewayChat(
+            gateway_chat_id=f"{gateway_name}-chat-1",
+            title="Gateway Test Chat",
+            chat_type="direct",
+        ),
+        text=text,
+        gateway_message_id="101",
     )
-    return AgentGatewayService(settings, session_factory)
 
 
 async def test_handle_text_message_persists_message_and_creates_task(
@@ -30,24 +55,23 @@ async def test_handle_text_message_persists_message_and_creates_task(
     user: User,
 ) -> None:
     service = build_gateway_service(session_factory, workspace, user)
-    incoming = IncomingGatewayMessage(
-        text="Investigate the nightly sync failures\nThe failures started after the last deploy.",
-        source="telegram",
-        source_user_id="telegram-user-1",
-        source_chat_id="telegram-chat-1",
-        source_message_id="101",
-        source_username="agent_sam_tester",
+    incoming = build_incoming_message(
+        workspace,
+        user,
+        "Investigate the nightly sync failures\nThe failures started after the last deploy.",
     )
 
-    response = await service.handle_text_message(incoming)
+    response = await service.handle_incoming_message(incoming)
 
-    assert "Task created." in response
+    assert response.task_id is not None
+    assert "Task created." in response.text
 
     async with session_factory() as session:
         db_message = await session.scalar(select(Message).where(Message.content == incoming.text))
         assert db_message is not None
-        assert db_message.metadata_json["source"] == "telegram"
-        assert db_message.task_id is not None
+        assert db_message.metadata_json["gateway_name"] == "cli"
+        assert db_message.metadata_json["gateway_user_id"] == "cli-user-1"
+        assert db_message.task_id == response.task_id
 
         task = await session.get(Task, db_message.task_id)
         assert task is not None
@@ -62,27 +86,28 @@ async def test_handle_new_queue_and_status_commands(
     user: User,
 ) -> None:
     service = build_gateway_service(session_factory, workspace, user)
-    create_request = IncomingGatewayMessage(text="/new Review deployment logs", source="telegram")
-
-    create_response = await service.handle_command("new", create_request, ["Review", "deployment", "logs"])
-    created_task_id = create_response.split("\n", maxsplit=2)[1].split(": ", maxsplit=1)[1]
-
-    queue_response = await service.handle_command(
-        "queue",
-        IncomingGatewayMessage(text="/queue", source="telegram"),
-        [],
+    create_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/new Review deployment logs", gateway_name="telegram")
     )
-    status_response = await service.handle_command(
-        "status",
-        IncomingGatewayMessage(text=f"/status {created_task_id}", source="telegram"),
-        [created_task_id],
+    assert create_response.task_id is not None
+
+    queue_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/queue", gateway_name="telegram")
+    )
+    status_response = await service.handle_incoming_message(
+        build_incoming_message(
+            workspace,
+            user,
+            f"/status {create_response.task_id}",
+            gateway_name="telegram",
+        )
     )
 
-    assert "Task created." in create_response
-    assert "Queue status" in queue_response
-    assert "Pending: 1" in queue_response
-    assert f"Task {created_task_id}" in status_response
-    assert "Title: Review deployment logs" in status_response
+    assert "Task created." in create_response.text
+    assert "Queue status" in queue_response.text
+    assert "Pending: 1" in queue_response.text
+    assert f"Task {create_response.task_id}" in status_response.text
+    assert "Title: Review deployment logs" in status_response.text
 
 
 async def test_handle_prioritize_pause_resume_and_cancel_commands(
@@ -91,38 +116,29 @@ async def test_handle_prioritize_pause_resume_and_cancel_commands(
     user: User,
 ) -> None:
     service = build_gateway_service(session_factory, workspace, user)
-    creation_response = await service.handle_command(
-        "new",
-        IncomingGatewayMessage(text="/new Triage support backlog", source="telegram"),
-        ["Triage", "support", "backlog"],
+    creation_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/new Triage support backlog", gateway_name="telegram")
     )
-    task_id = UUID(creation_response.split("\n", maxsplit=2)[1].split(": ", maxsplit=1)[1])
+    assert creation_response.task_id is not None
+    task_id = creation_response.task_id
 
-    prioritize_response = await service.handle_command(
-        "prioritize",
-        IncomingGatewayMessage(text=f"/prioritize {task_id} urgent", source="telegram"),
-        [str(task_id), "urgent"],
+    prioritize_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/prioritize {task_id} urgent", gateway_name="telegram")
     )
-    pause_response = await service.handle_command(
-        "pause",
-        IncomingGatewayMessage(text=f"/pause {task_id}", source="telegram"),
-        [str(task_id)],
+    pause_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/pause {task_id}", gateway_name="telegram")
     )
-    resume_response = await service.handle_command(
-        "resume",
-        IncomingGatewayMessage(text=f"/resume {task_id}", source="telegram"),
-        [str(task_id)],
+    resume_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/resume {task_id}", gateway_name="telegram")
     )
-    cancel_response = await service.handle_command(
-        "cancel",
-        IncomingGatewayMessage(text=f"/cancel {task_id}", source="telegram"),
-        [str(task_id)],
+    cancel_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/cancel {task_id}", gateway_name="telegram")
     )
 
-    assert "reprioritized to urgent" in prioritize_response
-    assert "Current status: paused" in pause_response
-    assert "Current status: pending" in resume_response
-    assert "Current status: cancelled" in cancel_response
+    assert "reprioritized to urgent" in prioritize_response.text
+    assert "Current status: paused" in pause_response.text
+    assert "Current status: pending" in resume_response.text
+    assert "Current status: cancelled" in cancel_response.text
 
     async with session_factory() as session:
         task = await session.get(Task, task_id)
@@ -159,13 +175,12 @@ async def test_handle_approve_command_marks_approval_and_tool_call(
         await session.commit()
         await session.refresh(approval)
 
-    response = await service.handle_command(
-        "approve",
-        IncomingGatewayMessage(text=f"/approve {approval.id}", source="telegram"),
-        [str(approval.id)],
+    response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/approve {approval.id}", gateway_name="telegram")
     )
 
-    assert f"Approval {approval.id} marked as approved." == response
+    assert response.approval_id == approval.id
+    assert f"Approval {approval.id} marked as approved." == response.text
 
     async with session_factory() as session:
         updated_approval = await session.get(Approval, approval.id)
@@ -177,3 +192,73 @@ async def test_handle_approve_command_marks_approval_and_tool_call(
         assert updated_approval.reviewed_at is not None
         assert updated_tool_call is not None
         assert updated_tool_call.approved_by_user is True
+
+
+async def test_handle_approve_command_unblocks_pending_shell_command_execution(
+    session_factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    workspace: Workspace,
+    user: User,
+    tmp_path,
+) -> None:
+    service = build_gateway_service(session_factory, workspace, user)
+    task = await create_task(
+        session,
+        workspace_id=workspace.id,
+        title="Gateway approval bridge",
+        description="Approve and execute a reviewed shell command.",
+        created_by_user_id=user.id,
+    )
+    tool = ShellCommandTool(session_factory, allowed_roots=[tmp_path])
+    command = f'"{sys.executable}" -c "print(\'gateway-approved-run\')"'
+
+    pending_result = await tool.submit_command(
+        ShellCommandRequest(
+            command=command,
+            working_directory=str(tmp_path),
+            reason="Run an approved diagnostic command.",
+            task_id=task.id,
+        )
+    )
+
+    assert pending_result.approval_id is not None
+
+    approve_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/approve {pending_result.approval_id}", gateway_name="cli")
+    )
+    execution_result = await tool.execute_approved_tool_call(pending_result.tool_call_id)
+
+    assert approve_response.approval_id == pending_result.approval_id
+    assert execution_result.status == "completed"
+    assert execution_result.exit_code == 0
+    assert "gateway-approved-run" in execution_result.stdout
+
+    async with session_factory() as verification_session:
+        approval = await verification_session.get(Approval, pending_result.approval_id)
+        tool_call = await verification_session.get(ToolCall, pending_result.tool_call_id)
+
+        assert approval is not None
+        assert approval.status == "approved"
+        assert tool_call is not None
+        assert tool_call.approved_by_user is True
+        assert tool_call.status == "completed"
+
+
+async def test_gateway_agents_and_models_commands(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(session_factory, workspace, user)
+
+    agents_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/agents", gateway_name="cli")
+    )
+    models_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/models", gateway_name="cli")
+    )
+
+    assert "Available agents:" in agents_response.text
+    assert "coding_agent" in agents_response.text
+    assert "Configured models:" in models_response.text
+    assert "openrouter/" in models_response.text

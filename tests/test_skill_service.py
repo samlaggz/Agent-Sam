@@ -228,6 +228,18 @@ def test_repository_example_skills_are_valid() -> None:
     definitions = load_skill_definitions(skills_root)
     definition_names = {definition.name for definition in definitions}
 
-    assert {"scraping_pipeline", "server_ops", "code_review", "linux_deployment"}.issubset(
+    assert {"scraping_pipeline", "server_ops", "code_review", "linux_deployment", "detailed_browsing"}.issubset(
         definition_names
     )
+
+
+def test_detailed_browsing_skill_is_authorization_gated() -> None:
+    skills_root = Path(__file__).resolve().parents[1] / "skills"
+    definitions = {definition.name: definition for definition in load_skill_definitions(skills_root)}
+
+    browsing_skill = definitions["detailed_browsing"]
+
+    assert browsing_skill.tools_allowed == ("shell_command", "health_snapshot")
+    assert any("authorization" in note.lower() or "permission" in note.lower() for note in browsing_skill.risk_notes)
+    assert any("captcha" in step.lower() for step in browsing_skill.procedure if isinstance(step, str))
+    assert any("allowlist" in step.lower() or "ask" in step.lower() for step in browsing_skill.procedure if isinstance(step, str))

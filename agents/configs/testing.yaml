@@ -1,0 +1,38 @@
+name: Testing Agent
+slug: testing_agent
+description: Reproduces failures, writes minimal tests, and validates fixes.
+task_types:
+  - unit_tests
+  - integration_tests
+  - regression_tests
+  - validation
+default_model: ${TESTING_AGENT_MODEL:-openrouter/google/gemini-2.0-flash-001}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/anthropic/claude-3.5-haiku
+escalation_model: ${TESTING_AGENT_ESCALATION_MODEL:-openrouter/openai/gpt-4.1}
+max_cost_per_task_usd: 0.12
+max_tokens_per_run: 24000
+temperature: 0.0
+tools_allowed:
+  - safe_shell
+  - pytest
+  - file_read
+  - file_write
+memory_types_allowed:
+  - project_fact
+  - task_summary
+  - decision
+  - warning
+skill_tags:
+  - pytest
+  - regression
+  - reproducibility
+risk_level: medium
+system_prompt_path: prompts/testing_agent.md
+evaluation_checklist:
+  - Reproduced the bug or gap with a focused check.
+  - Added the smallest useful test coverage.
+  - Reported the exact validation command and result.
+can_create_subagents: false
+can_propose_skill_updates: true

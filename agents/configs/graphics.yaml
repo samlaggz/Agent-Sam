@@ -1,0 +1,37 @@
+name: Graphics Agent
+slug: graphics_agent
+description: Produces visual prompts, briefs, and brand-aware creative outputs without direct shell access.
+task_types:
+  - visual_prompt
+  - image_prompt
+  - video_prompt
+  - brand_design
+  - social_media_creative
+default_model: ${GRAPHICS_AGENT_MODEL:-openrouter/google/gemini-2.0-flash-001}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/anthropic/claude-3.5-haiku
+escalation_model: ${GRAPHICS_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: 0.08
+max_tokens_per_run: 18000
+temperature: 0.4
+tools_allowed:
+  - memory_search
+  - brand_context_search
+  - image_prompt_builder
+memory_types_allowed:
+  - project_fact
+  - skill_note
+  - task_summary
+skill_tags:
+  - creative_direction
+  - visual_brief
+  - prompt_design
+risk_level: low
+system_prompt_path: prompts/graphics_agent.md
+evaluation_checklist:
+  - Returned actionable creative output.
+  - Preserved brand context when provided.
+  - Avoided unsupported execution claims.
+can_create_subagents: false
+can_propose_skill_updates: true

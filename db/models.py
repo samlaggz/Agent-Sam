@@ -49,6 +49,14 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         back_populates="reviewed_by",
         foreign_keys="SkillProposal.reviewed_by_user_id",
     )
+    sub_agent_proposals_requested: Mapped[list["SubAgentProposal"]] = relationship(
+        back_populates="requested_by",
+        foreign_keys="SubAgentProposal.requested_by_user_id",
+    )
+    sub_agent_proposals_reviewed: Mapped[list["SubAgentProposal"]] = relationship(
+        back_populates="reviewed_by",
+        foreign_keys="SubAgentProposal.reviewed_by_user_id",
+    )
 
 
 class Workspace(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -119,6 +127,8 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     memories: Mapped[list["Memory"]] = relationship(back_populates="task")
     approvals: Mapped[list["Approval"]] = relationship(back_populates="task")
     model_calls: Mapped[list["ModelCall"]] = relationship(back_populates="task")
+    agent_runs: Mapped[list["AgentRun"]] = relationship(back_populates="task")
+    learning_events: Mapped[list["LearningEvent"]] = relationship(back_populates="task")
 
 
 class Message(UUIDPrimaryKeyMixin, Base):
@@ -202,6 +212,7 @@ class TaskRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     task: Mapped[Task] = relationship(back_populates="runs")
     tool_calls: Mapped[list["ToolCall"]] = relationship(back_populates="task_run")
     model_calls: Mapped[list["ModelCall"]] = relationship(back_populates="task_run")
+    agent_runs: Mapped[list["AgentRun"]] = relationship(back_populates="task_run")
 
 
 class ToolCall(UUIDPrimaryKeyMixin, Base):
@@ -389,6 +400,7 @@ class SkillProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    agent_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
     name: Mapped[str] = mapped_column(String(255))
     version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
     change_type: Mapped[str] = mapped_column(String(32), default="create", server_default=text("'create'"))
@@ -440,6 +452,7 @@ class SkillProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="pending", server_default=text("'pending'"))
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
@@ -535,9 +548,184 @@ class ModelCall(UUIDPrimaryKeyMixin, Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     task: Mapped[Task | None] = relationship(back_populates="model_calls")
     task_run: Mapped[TaskRun | None] = relationship(back_populates="model_calls")
     message: Mapped[Message | None] = relationship(back_populates="model_calls")
+
+
+class AgentProfileRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "agent_profiles"
+    __table_args__ = (UniqueConstraint("slug", "version", name="uq_agent_profiles_slug_version"),)
+
+    slug: Mapped[str] = mapped_column(String(128), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text)
+    profile_yaml: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+
+
+class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        Index("ix_agent_runs_task_agent_created", "task_id", "agent_slug", "created_at"),
+        Index("ix_agent_runs_status_created", "status", "created_at"),
+    )
+
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    task_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("task_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    agent_slug: Mapped[str] = mapped_column(String(128), index=True)
+    model: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="started", server_default=text("'started'"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    input_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cost_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )
+
+    task: Mapped[Task | None] = relationship(back_populates="agent_runs")
+    task_run: Mapped[TaskRun | None] = relationship(back_populates="agent_runs")
+    steps: Mapped[list["AgentRunStep"]] = relationship(back_populates="agent_run")
+    evaluations: Mapped[list["AgentEvaluation"]] = relationship(back_populates="agent_run")
+
+
+class AgentRunStep(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "agent_run_steps"
+    __table_args__ = (Index("ix_agent_run_steps_agent_run_created", "agent_run_id", "created_at"),)
+
+    agent_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
+    step_type: Mapped[str] = mapped_column(String(64), default="note", server_default=text("'note'"))
+    title: Mapped[str] = mapped_column(String(255))
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="completed", server_default=text("'completed'"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )
+
+    agent_run: Mapped[AgentRun] = relationship(back_populates="steps")
+
+
+class AgentEvaluation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "agent_evaluations"
+    __table_args__ = (Index("ix_agent_evaluations_agent_run_created", "agent_run_id", "created_at"),)
+
+    agent_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
+    evaluator_slug: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="pending", server_default=text("'pending'"))
+    checklist_json: Mapped[list[str]] = mapped_column(
+        "checklist",
+        JSON_VARIANT,
+        default=list,
+        server_default=EMPTY_JSON_ARRAY,
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )
+
+    agent_run: Mapped[AgentRun] = relationship(back_populates="evaluations")
+
+
+class SubAgentProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "sub_agent_proposals"
+    __table_args__ = (Index("ix_sub_agent_proposals_status_created", "status", "created_at"),)
+
+    parent_agent_slug: Mapped[str] = mapped_column(String(128), index=True)
+    proposed_slug: Mapped[str] = mapped_column(String(128), unique=True)
+    proposed_name: Mapped[str] = mapped_column(String(255))
+    proposed_profile_yaml: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    expected_savings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected_quality_gain: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_tools_json: Mapped[list[str]] = mapped_column(
+        "required_tools",
+        JSON_VARIANT,
+        default=list,
+        server_default=EMPTY_JSON_ARRAY,
+    )
+    prompt_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", server_default=text("'pending'"))
+    requested_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reviewed_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )
+
+    requested_by: Mapped[User | None] = relationship(
+        back_populates="sub_agent_proposals_requested",
+        foreign_keys=[requested_by_user_id],
+    )
+    reviewed_by: Mapped[User | None] = relationship(
+        back_populates="sub_agent_proposals_reviewed",
+        foreign_keys=[reviewed_by_user_id],
+    )
+
+
+class LearningEvent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "learning_events"
+    __table_args__ = (Index("ix_learning_events_agent_created", "agent_slug", "created_at"),)
+
+    agent_slug: Mapped[str] = mapped_column(String(128), index=True)
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    content: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float] = mapped_column(Float, default=0.5, server_default=text("0.5"))
+    approved: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )
+
+    task: Mapped[Task | None] = relationship(back_populates="learning_events")
+
+
+class ModelBudget(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "model_budgets"
+    __table_args__ = (Index("ix_model_budgets_scope_period", "scope", "period_start", "period_end"),)
+
+    scope: Mapped[str] = mapped_column(String(32))
+    scope_key: Mapped[str] = mapped_column(String(255), index=True)
+    budget_usd: Mapped[float] = mapped_column(Float)
+    spent_usd: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0.0"))
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )

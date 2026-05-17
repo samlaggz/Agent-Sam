@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
+from agents.base import AgentProfile
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from db.models import ModelCall
+from services.model_router import ModelExecutionRequest, ModelRouter
 
 
 @dataclass(frozen=True)
@@ -34,9 +36,20 @@ class PlanningModel(Protocol):
 
 
 class LiteLLMPlanningModel:
-    def __init__(self, settings: Settings, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        profile: AgentProfile | None = None,
+        model_router: ModelRouter | None = None,
+        model_override: str | None = None,
+    ) -> None:
         self._settings = settings
         self._session_factory = session_factory
+        self._profile = profile
+        self._model_router = model_router or ModelRouter(settings, session_factory)
+        self._model_override = model_override
 
     async def create_plan(
         self,
@@ -52,46 +65,36 @@ class LiteLLMPlanningModel:
             skill_context=skill_context,
         )
         response_text = ""
-        status = "failed"
-        prompt_tokens: int | None = None
-        completion_tokens: int | None = None
-        total_tokens: int | None = None
 
-        start = time.perf_counter()
         try:
-            from litellm import acompletion
-
-            response = await acompletion(
-                model=self._settings.litellm_model,
-                api_key=self._settings.litellm_api_key or None,
-                temperature=0.2,
-                messages=self._build_messages(
-                    task=task,
-                    memory_context=memory_context,
-                    skill_context=skill_context,
-                ),
+            response = await self._model_router.run_completion(
+                ModelExecutionRequest(
+                    agent_slug=self._profile.slug if self._profile is not None else "planning_agent",
+                    model=self._model_override or self._resolve_default_model(),
+                    fallback_models=self._profile.fallback_models if self._profile is not None else (),
+                    messages=self._build_messages(
+                        task=task,
+                        memory_context=memory_context,
+                        skill_context=skill_context,
+                    ),
+                    task_id=UUID(str(task["id"])),
+                    task_run_id=task_run_id,
+                    temperature=self._profile.temperature if self._profile is not None else 0.2,
+                    max_tokens=self._profile.max_tokens_per_run if self._profile is not None else None,
+                    metadata={"planner": self._profile.slug if self._profile is not None else "legacy"},
+                )
             )
-            response_text = self._extract_response_text(response)
-            prompt_tokens, completion_tokens, total_tokens = self._extract_usage(response)
+            response_text = response.content
             planned_steps = self._parse_response(response_text)
-            status = "completed"
         except Exception as exc:
             response_text = f"LiteLLM planning failed: {exc}"
             planned_steps = self._fallback_plan(task)
-
-        latency_ms = max(1, int((time.perf_counter() - start) * 1000))
-        await self._record_model_call(
-            task_id=UUID(str(task["id"])),
-            task_run_id=task_run_id,
-            request_json=request_json,
-            response_text=response_text,
-            status=status,
-            latency_ms=latency_ms,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-        )
         return planned_steps
+
+    def _resolve_default_model(self) -> str:
+        if self._profile is not None:
+            return self._profile.default_model
+        return self._settings.litellm_model
 
     def _build_messages(
         self,
@@ -100,11 +103,12 @@ class LiteLLMPlanningModel:
         memory_context: list[dict[str, Any]],
         skill_context: list[dict[str, Any]],
     ) -> list[dict[str, str]]:
+        profile_prompt = self._load_profile_prompt()
         system_prompt = (
-            "You are the planning component for a private AI agent operating system. "
+            f"{profile_prompt}\n\n"
             "Create a simple step-by-step plan for the task. "
             "Only use these tool names when needed: utc_now, health_snapshot, shell_command. "
-            "Use shell_command only when another tool cannot solve the task. "
+            "Use shell_command only when another tool cannot solve the task and only if policy allows it. "
             "Return strict JSON with a top-level 'steps' array. "
             "Each step must include: title, description, tool_name, command, reason. "
             "Use null for tool_name and command when the step is reasoning-only. "
@@ -124,6 +128,11 @@ class LiteLLMPlanningModel:
             {"role": "user", "content": user_prompt},
         ]
 
+    def _load_profile_prompt(self) -> str:
+        if self._profile is None:
+            return "You are the planning component for a private AI agent operating system."
+        return Path(self._profile.system_prompt_path).read_text(encoding="utf-8").strip()
+
     def _build_request_payload(
         self,
         *,
@@ -136,35 +145,6 @@ class LiteLLMPlanningModel:
             "memory_context": memory_context,
             "skill_context": skill_context,
         }
-
-    def _extract_response_text(self, response: Any) -> str:
-        if isinstance(response, dict):
-            choices = response.get("choices", [])
-            if choices:
-                message = choices[0].get("message", {})
-                return str(message.get("content", ""))
-
-        choices = getattr(response, "choices", None)
-        if choices:
-            message = getattr(choices[0], "message", None)
-            if message is not None:
-                content = getattr(message, "content", "")
-                return str(content)
-        return ""
-
-    def _extract_usage(self, response: Any) -> tuple[int | None, int | None, int | None]:
-        usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
-        if usage is None:
-            return None, None, None
-
-        if isinstance(usage, dict):
-            return usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("total_tokens")
-
-        return (
-            getattr(usage, "prompt_tokens", None),
-            getattr(usage, "completion_tokens", None),
-            getattr(usage, "total_tokens", None),
-        )
 
     def _parse_response(self, response_text: str) -> list[PlannedStep]:
         cleaned = response_text.strip()
@@ -220,47 +200,3 @@ class LiteLLMPlanningModel:
             ),
         ]
 
-    async def _record_model_call(
-        self,
-        *,
-        task_id: UUID,
-        task_run_id: UUID | None,
-        request_json: dict[str, Any],
-        response_text: str,
-        status: str,
-        latency_ms: int,
-        prompt_tokens: int | None,
-        completion_tokens: int | None,
-        total_tokens: int | None,
-    ) -> None:
-        async with self._session_factory() as session:
-            session.add(
-                ModelCall(
-                    task_id=task_id,
-                    task_run_id=task_run_id,
-                    provider=self._infer_provider(self._settings.litellm_model),
-                    model_name=self._settings.litellm_model,
-                    request_json=request_json,
-                    response_text=response_text,
-                    status=status,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    latency_ms=latency_ms,
-                )
-            )
-            await session.commit()
-
-    def _infer_provider(self, model_name: str) -> str:
-        if "/" in model_name:
-            return model_name.split("/", maxsplit=1)[0]
-        lowered = model_name.lower()
-        if lowered.startswith(("gpt", "o1", "o3", "o4")):
-            return "openai"
-        if lowered.startswith("claude"):
-            return "anthropic"
-        if lowered.startswith("gemini"):
-            return "gemini"
-        if lowered.startswith(("ollama", "llama", "mistral", "qwen")):
-            return "local"
-        return "litellm"

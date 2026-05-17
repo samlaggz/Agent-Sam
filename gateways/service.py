@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select
 
+from agents.registry import get_agent_profile, list_agents
+from agents.router import RouteRequest, RouterAgent
 from app.config import Settings
 from db.models import Approval, Message, Task, ToolCall, User, Workspace
 from db.task_queue import (
@@ -21,186 +23,202 @@ from db.task_queue import (
     reprioritize_task,
     resume_task,
 )
+from gateways.base import GatewayAttachment, GatewayResponse, IncomingGatewayMessage
+from services.agent_learning_service import approve_skill_proposal, approve_sub_agent_proposal
+from services.budget_service import estimate_model_cost_level
+from services.model_router import ModelRouter
 
 
 MAX_TASK_TITLE_LENGTH = 80
-
-
-@dataclass(frozen=True)
-class GatewayContext:
-    workspace_id: UUID
-    user_id: UUID
-
-
-@dataclass(frozen=True)
-class IncomingGatewayMessage:
-    text: str
-    source: str
-    source_user_id: str | None = None
-    source_chat_id: str | None = None
-    source_message_id: str | None = None
-    source_username: str | None = None
+logger = logging.getLogger(__name__)
 
 
 class AgentGatewayService:
-    def __init__(self, settings: Settings, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        if settings.default_workspace_id is None:
-            raise ValueError("DEFAULT_WORKSPACE_ID must be set for gateway requests.")
-        if settings.default_user_id is None:
-            raise ValueError("DEFAULT_USER_ID must be set for gateway requests.")
-
-        self._settings = settings
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
-        self._default_workspace_id = settings.default_workspace_id
-        self._default_user_id = settings.default_user_id
+        self._router_agent = RouterAgent()
+        self._model_router = ModelRouter(Settings(), session_factory)
 
-    async def handle_text_message(self, incoming: IncomingGatewayMessage) -> str:
-        async with self._session_factory() as session:
-            context = await self._resolve_context(session)
-            message = await self._save_incoming_message(session, context, incoming)
-            task = await self._create_task_from_text(session, context, incoming, message)
-            return self._format_task_confirmation(task)
+    async def handle_incoming_message(self, incoming: IncomingGatewayMessage) -> GatewayResponse:
+        normalized_text = incoming.text.strip()
+        if not normalized_text:
+            return GatewayResponse(text="Empty messages cannot be processed.")
 
-    async def handle_command(
-        self,
-        command: str,
-        incoming: IncomingGatewayMessage,
-        arguments: list[str],
-    ) -> str:
+        command, arguments = self._parse_command(normalized_text)
+
         async with self._session_factory() as session:
-            context = await self._resolve_context(session)
-            message = await self._save_incoming_message(
+            await self._resolve_context(
                 session,
-                context,
-                incoming,
-                metadata_extra={"command": command, "arguments": arguments},
+                workspace_id=incoming.workspace_id,
+                user_id=incoming.user_id,
             )
+            metadata_extra = None
+            if command is not None:
+                metadata_extra = {"command": command, "arguments": arguments}
+            message = await self._save_incoming_message(session, incoming, metadata_extra=metadata_extra)
 
-            handlers = {
-                "start": self._handle_start_command,
-                "new": self._handle_new_command,
-                "status": self._handle_status_command,
-                "queue": self._handle_queue_command,
-                "prioritize": self._handle_prioritize_command,
-                "pause": self._handle_pause_command,
-                "resume": self._handle_resume_command,
-                "approve": self._handle_approve_command,
-                "cancel": self._handle_cancel_command,
-            }
-            handler = handlers.get(command)
-            if handler is None:
-                return self._help_text()
+            if command is None:
+                return await self._handle_text_message(session, message, incoming)
+            return await self._handle_command(session, message, incoming, command, arguments)
 
-            return await handler(session, context, message, incoming, arguments)
+    async def _handle_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        command: str,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        handlers = {
+            "start": self._handle_start_command,
+            "help": self._handle_help_command,
+            "new": self._handle_new_command,
+            "status": self._handle_status_command,
+            "queue": self._handle_queue_command,
+            "prioritize": self._handle_prioritize_command,
+            "pause": self._handle_pause_command,
+            "resume": self._handle_resume_command,
+            "approve": self._handle_approve_command,
+            "cancel": self._handle_cancel_command,
+            "agents": self._handle_agents_command,
+            "agent": self._handle_agent_command,
+            "route": self._handle_route_command,
+            "models": self._handle_models_command,
+            "budget": self._handle_budget_command,
+            "skills": self._handle_skills_command,
+            "subagents": self._handle_subagents_command,
+        }
+        handler = handlers.get(command)
+        if handler is None:
+            return GatewayResponse(text=self._help_text())
+
+        return await handler(session, message, incoming, arguments)
+
+    async def _handle_text_message(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+    ) -> GatewayResponse:
+        task = await self._create_task_from_text(session, incoming, message)
+        return GatewayResponse(text=self._format_task_confirmation(task), task_id=task.id)
 
     async def _handle_start_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
-        del session, context, message, incoming, arguments
-        return self._help_text()
+    ) -> GatewayResponse:
+        del session, message, incoming, arguments
+        return GatewayResponse(text=self._help_text())
+
+    async def _handle_help_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del session, message, incoming, arguments
+        return GatewayResponse(text=self._help_text())
 
     async def _handle_new_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
+    ) -> GatewayResponse:
         if not arguments:
-            return "Usage: /new <task description>"
+            return GatewayResponse(text="Usage: /new <task description>")
 
         task_text = " ".join(arguments).strip()
-        task = await self._create_task_from_text(session, context, incoming, message, task_text=task_text)
-        return self._format_task_confirmation(task)
+        task = await self._create_task_from_text(session, incoming, message, task_text=task_text)
+        return GatewayResponse(text=self._format_task_confirmation(task), task_id=task.id)
 
     async def _handle_status_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
+    ) -> GatewayResponse:
         del incoming
 
         if not arguments:
-            return "Usage: /status <task_id>"
+            return GatewayResponse(text="Usage: /status <task_id>")
 
         task_id = self._parse_uuid(arguments[0])
         if task_id is None:
-            return "Task IDs must be valid UUID values."
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
 
-        task = await self._load_task(session, context, task_id)
+        task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
         if task is None:
-            return "Task not found in the default workspace."
+            return GatewayResponse(text="Task not found in the selected workspace.")
 
         subtasks = await list_subtasks(session, parent_task_id=task.id)
         await self._link_message_to_task(session, message, task.id)
-        return self._format_task_status(task, len(subtasks))
+        return GatewayResponse(text=self._format_task_status(task, len(subtasks)), task_id=task.id)
 
     async def _handle_queue_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
-        del message, incoming, arguments
+    ) -> GatewayResponse:
+        del message, arguments
 
-        queue_status = await get_queue_status(session, workspace_id=context.workspace_id)
-        pending_tasks = await list_task_queue(session, workspace_id=context.workspace_id, limit=5)
-        return self._format_queue_status(queue_status, pending_tasks)
+        queue_status = await get_queue_status(session, workspace_id=incoming.workspace_id)
+        pending_tasks = await list_task_queue(session, workspace_id=incoming.workspace_id, limit=5)
+        return GatewayResponse(text=self._format_queue_status(queue_status, pending_tasks))
 
     async def _handle_prioritize_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
+    ) -> GatewayResponse:
         del incoming
 
         if len(arguments) != 2:
-            return (
-                "Usage: /prioritize <task_id> <priority>\n"
-                f"Allowed priorities: {', '.join(TASK_PRIORITIES)}"
+            return GatewayResponse(
+                text=(
+                    "Usage: /prioritize <task_id> <priority>\n"
+                    f"Allowed priorities: {', '.join(TASK_PRIORITIES)}"
+                )
             )
 
         task_id = self._parse_uuid(arguments[0])
         priority = arguments[1].lower()
         if task_id is None:
-            return "Task IDs must be valid UUID values."
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
         if priority not in TASK_PRIORITIES:
-            return f"Priority must be one of: {', '.join(TASK_PRIORITIES)}"
+            return GatewayResponse(text=f"Priority must be one of: {', '.join(TASK_PRIORITIES)}")
 
-        task = await self._load_task(session, context, task_id)
+        task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
         if task is None:
-            return "Task not found in the default workspace."
+            return GatewayResponse(text="Task not found in the selected workspace.")
 
         updated_task = await reprioritize_task(session, task_id=task.id, priority=priority)
         await self._link_message_to_task(session, message, task.id)
-        return f"Task {updated_task.id} reprioritized to {updated_task.priority}."
+        return GatewayResponse(
+            text=f"Task {updated_task.id} reprioritized to {updated_task.priority}.",
+            task_id=updated_task.id,
+        )
 
     async def _handle_pause_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
+    ) -> GatewayResponse:
         del incoming
         return await self._update_task_state_command(
             session,
-            context,
             message,
             arguments,
             usage="Usage: /pause <task_id>",
@@ -211,15 +229,13 @@ class AgentGatewayService:
     async def _handle_resume_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
+    ) -> GatewayResponse:
         del incoming
         return await self._update_task_state_command(
             session,
-            context,
             message,
             arguments,
             usage="Usage: /resume <task_id>",
@@ -230,15 +246,13 @@ class AgentGatewayService:
     async def _handle_cancel_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
+    ) -> GatewayResponse:
         del incoming
         return await self._update_task_state_command(
             session,
-            context,
             message,
             arguments,
             usage="Usage: /cancel <task_id>",
@@ -249,26 +263,25 @@ class AgentGatewayService:
     async def _handle_approve_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         incoming: IncomingGatewayMessage,
         arguments: list[str],
-    ) -> str:
+    ) -> GatewayResponse:
         del incoming
 
         if not arguments:
-            return "Usage: /approve <approval_id>"
+            return GatewayResponse(text="Usage: /approve <approval_id>")
 
         approval_id = self._parse_uuid(arguments[0])
         if approval_id is None:
-            return "Approval IDs must be valid UUID values."
+            return GatewayResponse(text="Approval IDs must be valid UUID values.")
 
-        approval = await self._load_approval(session, context, approval_id)
+        approval = await self._load_approval(session, workspace_id=message.workspace_id, approval_id=approval_id)
         if approval is None:
-            return "Approval not found in the default workspace."
+            return GatewayResponse(text="Approval not found in the selected workspace.")
 
         approval.status = "approved"
-        approval.reviewed_by_user_id = context.user_id
+        approval.reviewed_by_user_id = message.user_id
         approval.reviewed_at = datetime.now(timezone.utc)
 
         if approval.tool_call_id is not None:
@@ -281,56 +294,240 @@ class AgentGatewayService:
         if approval.task_id is not None:
             await self._link_message_to_task(session, message, approval.task_id)
 
-        return f"Approval {approval.id} marked as approved."
+        return GatewayResponse(
+            text=f"Approval {approval.id} marked as approved.",
+            task_id=approval.task_id,
+            approval_id=approval.id,
+        )
+
+    async def _handle_agents_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del session, message, incoming, arguments
+        profiles = list_agents()
+        lines = ["Available agents:"]
+        for profile in profiles:
+            if profile.slug == "router_agent":
+                continue
+            lines.append(f"- {profile.slug}: {profile.description}")
+        return GatewayResponse(text="\n".join(lines))
+
+    async def _handle_agent_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del session, message, incoming
+        if not arguments:
+            return GatewayResponse(text="Usage: /agent <slug>")
+        try:
+            profile = get_agent_profile(arguments[0])
+        except KeyError:
+            return GatewayResponse(text="Unknown agent slug.")
+        return GatewayResponse(
+            text=(
+                f"Agent: {profile.name}\n"
+                f"Slug: {profile.slug}\n"
+                f"Task types: {', '.join(profile.task_types)}\n"
+                f"Default model: {profile.default_model}\n"
+                f"Escalation model: {profile.escalation_model}\n"
+                f"Tools: {', '.join(profile.tools_allowed)}\n"
+                f"Max cost/task: ${profile.max_cost_per_task_usd:.2f}"
+            )
+        )
+
+    async def _handle_route_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del incoming
+        if not arguments:
+            return GatewayResponse(text="Usage: /route <task_id>")
+        task_id = self._parse_uuid(arguments[0])
+        if task_id is None:
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
+        task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
+        if task is None:
+            return GatewayResponse(text="Task not found in the selected workspace.")
+        decision = self._router_agent.route(
+            RouteRequest(
+                title=task.title,
+                description=task.description or "",
+                metadata=dict(task.metadata_json or {}),
+            )
+        )
+        await self._link_message_to_task(session, message, task.id)
+        return GatewayResponse(
+            text=(
+                f"Route for task {task.id}\n"
+                f"Agent: {decision.agent_slug}\n"
+                f"Model: {decision.model}\n"
+                f"Confidence: {decision.confidence:.2f}\n"
+                f"Cost level: {decision.estimated_cost_level}\n"
+                f"Approval required: {decision.requires_human_approval}\n"
+                f"Reason: {decision.reason}"
+            ),
+            task_id=task.id,
+        )
+
+    async def _handle_models_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del session, message, incoming, arguments
+        models = self._model_router.list_configured_models(list_agents())
+        return GatewayResponse(text="Configured models:\n" + "\n".join(f"- {model}" for model in models))
+
+    async def _handle_budget_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del session, message, incoming, arguments
+        settings = Settings()
+        lines = [
+            f"Global max cost/task: ${settings.max_cost_per_task_usd:.2f}",
+            f"Daily model budget: ${settings.daily_model_budget_usd:.2f}",
+        ]
+        for profile in list_agents():
+            if profile.slug == "router_agent":
+                continue
+            lines.append(
+                f"- {profile.slug}: ${profile.max_cost_per_task_usd:.2f} default={profile.default_model} est={estimate_model_cost_level(profile.default_model):.2f}"
+            )
+        return GatewayResponse(text="Budget summary\n" + "\n".join(lines))
+
+    async def _handle_skills_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del incoming
+        if not arguments or arguments[0].lower() == "pending":
+            result = await session.execute(
+                select(Approval, Task)
+                .outerjoin(Task, Approval.task_id == Task.id)
+                .where(Approval.workspace_id == message.workspace_id, Approval.skill_proposal_id.is_not(None), Approval.status == "pending")
+                .order_by(Approval.created_at.asc())
+            )
+            approvals = list(result.all())
+            if not approvals:
+                return GatewayResponse(text="No pending skill proposals.")
+            lines = ["Pending skill proposals:"]
+            for approval, _ in approvals:
+                lines.append(f"- {approval.skill_proposal_id} (approval {approval.id})")
+            return GatewayResponse(text="\n".join(lines))
+        if len(arguments) == 2 and arguments[0].lower() == "approve":
+            proposal_id = self._parse_uuid(arguments[1])
+            if proposal_id is None:
+                return GatewayResponse(text="Proposal IDs must be valid UUID values.")
+            proposal = await approve_skill_proposal(session, proposal_id=proposal_id, reviewed_by_user_id=message.user_id)
+            return GatewayResponse(text=f"Skill proposal {proposal.id} approved.")
+        return GatewayResponse(text="Usage: /skills pending OR /skills approve <proposal_id>")
+
+    async def _handle_subagents_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del incoming
+        from db.models import SubAgentProposal
+
+        if not arguments or arguments[0].lower() == "pending":
+            proposals = list(
+                (
+                    await session.execute(
+                        select(SubAgentProposal)
+                        .where(SubAgentProposal.status == "pending")
+                        .order_by(SubAgentProposal.created_at.asc())
+                    )
+                ).scalars()
+            )
+            if not proposals:
+                return GatewayResponse(text="No pending sub-agent proposals.")
+            lines = ["Pending sub-agent proposals:"]
+            for proposal in proposals:
+                lines.append(f"- {proposal.id}: {proposal.proposed_slug}")
+            return GatewayResponse(text="\n".join(lines))
+        if len(arguments) == 2 and arguments[0].lower() == "approve":
+            proposal_id = self._parse_uuid(arguments[1])
+            if proposal_id is None:
+                return GatewayResponse(text="Proposal IDs must be valid UUID values.")
+            proposal = await approve_sub_agent_proposal(session, proposal_id=proposal_id, reviewed_by_user_id=message.user_id)
+            return GatewayResponse(text=f"Sub-agent proposal {proposal.id} approved.")
+        return GatewayResponse(text="Usage: /subagents pending OR /subagents approve <proposal_id>")
 
     async def _update_task_state_command(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         message: Message,
         arguments: list[str],
         *,
         usage: str,
         action_label: str,
         action,
-    ) -> str:
+    ) -> GatewayResponse:
         if not arguments:
-            return usage
+            return GatewayResponse(text=usage)
 
         task_id = self._parse_uuid(arguments[0])
         if task_id is None:
-            return "Task IDs must be valid UUID values."
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
 
-        task = await self._load_task(session, context, task_id)
+        task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
         if task is None:
-            return "Task not found in the default workspace."
+            return GatewayResponse(text="Task not found in the selected workspace.")
 
         updated_task = await action(session, task_id=task.id)
         await self._link_message_to_task(session, message, task.id)
-        return f"Task {updated_task.id} {action_label}. Current status: {updated_task.status}."
+        return GatewayResponse(
+            text=f"Task {updated_task.id} {action_label}. Current status: {updated_task.status}.",
+            task_id=updated_task.id,
+        )
 
-    async def _resolve_context(self, session: AsyncSession) -> GatewayContext:
-        workspace = await session.get(Workspace, self._default_workspace_id)
+    async def _resolve_context(
+        self,
+        session: AsyncSession,
+        *,
+        workspace_id: UUID,
+        user_id: UUID,
+    ) -> None:
+        workspace = await session.get(Workspace, workspace_id)
         if workspace is None:
-            raise RuntimeError("DEFAULT_WORKSPACE_ID does not reference an existing workspace.")
+            raise RuntimeError("Gateway workspace_id does not reference an existing workspace.")
 
-        user = await session.get(User, self._default_user_id)
+        user = await session.get(User, user_id)
         if user is None:
-            raise RuntimeError("DEFAULT_USER_ID does not reference an existing user.")
-
-        return GatewayContext(workspace_id=workspace.id, user_id=user.id)
+            raise RuntimeError("Gateway user_id does not reference an existing user.")
 
     async def _save_incoming_message(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         incoming: IncomingGatewayMessage,
         *,
         metadata_extra: dict[str, Any] | None = None,
     ) -> Message:
         message = Message(
-            workspace_id=context.workspace_id,
-            user_id=context.user_id,
+            workspace_id=incoming.workspace_id,
+            user_id=incoming.user_id,
             role="user",
             content=incoming.text,
             metadata_json=self._build_message_metadata(incoming, metadata_extra=metadata_extra),
@@ -343,7 +540,6 @@ class AgentGatewayService:
     async def _create_task_from_text(
         self,
         session: AsyncSession,
-        context: GatewayContext,
         incoming: IncomingGatewayMessage,
         message: Message,
         *,
@@ -356,16 +552,18 @@ class AgentGatewayService:
         title = self._build_task_title(normalized_text)
         task = await create_task_request(
             session,
-            workspace_id=context.workspace_id,
+            workspace_id=incoming.workspace_id,
             title=title,
             description=normalized_text,
-            created_by_user_id=context.user_id,
+            created_by_user_id=incoming.user_id,
             metadata_json={
-                "source": incoming.source,
-                "source_message_id": incoming.source_message_id,
-                "source_chat_id": incoming.source_chat_id,
-                "source_user_id": incoming.source_user_id,
-                "gateway_message_id": str(message.id),
+                "gateway_name": incoming.gateway_name,
+                "gateway_message_id": incoming.gateway_message_id,
+                "gateway_chat_id": incoming.gateway_chat.gateway_chat_id,
+                "gateway_user_id": incoming.gateway_user.gateway_user_id,
+                "gateway_username": incoming.gateway_user.username,
+                "gateway_message_record_id": str(message.id),
+                "attachments": self._serialize_attachments(incoming.attachments),
             },
         )
         await self._link_message_to_task(session, message, task.id)
@@ -376,20 +574,21 @@ class AgentGatewayService:
         await session.commit()
         await session.refresh(message)
 
-    async def _load_task(self, session: AsyncSession, context: GatewayContext, task_id: UUID) -> Task | None:
+    async def _load_task(self, session: AsyncSession, *, workspace_id: UUID, task_id: UUID) -> Task | None:
         task = await session.get(Task, task_id)
-        if task is None or task.workspace_id != context.workspace_id:
+        if task is None or task.workspace_id != workspace_id:
             return None
         return task
 
     async def _load_approval(
         self,
         session: AsyncSession,
-        context: GatewayContext,
+        *,
+        workspace_id: UUID,
         approval_id: UUID,
     ) -> Approval | None:
         approval = await session.get(Approval, approval_id)
-        if approval is None or approval.workspace_id != context.workspace_id:
+        if approval is None or approval.workspace_id != workspace_id:
             return None
         return approval
 
@@ -400,11 +599,16 @@ class AgentGatewayService:
         metadata_extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         metadata = {
-            "source": incoming.source,
-            "source_user_id": incoming.source_user_id,
-            "source_chat_id": incoming.source_chat_id,
-            "source_message_id": incoming.source_message_id,
-            "source_username": incoming.source_username,
+            "gateway_name": incoming.gateway_name,
+            "gateway_user_id": incoming.gateway_user.gateway_user_id,
+            "gateway_username": incoming.gateway_user.username,
+            "gateway_display_name": incoming.gateway_user.display_name,
+            "gateway_chat_id": incoming.gateway_chat.gateway_chat_id,
+            "gateway_chat_title": incoming.gateway_chat.title,
+            "gateway_chat_type": incoming.gateway_chat.chat_type,
+            "gateway_message_id": incoming.gateway_message_id,
+            "attachments": self._serialize_attachments(incoming.attachments),
+            "raw_payload": incoming.raw_payload,
         }
         if metadata_extra:
             metadata.update(metadata_extra)
@@ -458,9 +662,20 @@ class AgentGatewayService:
     def _help_text(self) -> str:
         return (
             "Agent Sam commands:\n"
+            "/start\n"
+            "/help\n"
             "/new <task description>\n"
             "/status <task_id>\n"
             "/queue\n"
+            "/agents\n"
+            "/agent <slug>\n"
+            "/route <task_id>\n"
+            "/models\n"
+            "/budget\n"
+            "/skills pending\n"
+            "/skills approve <proposal_id>\n"
+            "/subagents pending\n"
+            "/subagents approve <proposal_id>\n"
             f"/prioritize <task_id> <{'|'.join(TASK_PRIORITIES)}>\n"
             "/pause <task_id>\n"
             "/resume <task_id>\n"
@@ -473,3 +688,32 @@ class AgentGatewayService:
             return UUID(raw_value)
         except ValueError:
             return None
+
+    def _parse_command(self, text: str) -> tuple[str | None, list[str]]:
+        stripped = text.strip()
+        if not stripped.startswith("/"):
+            return None, []
+
+        parts = stripped.split()
+        command_token = parts[0][1:]
+        command = command_token.split("@", maxsplit=1)[0].strip().lower()
+        if not command:
+            return None, []
+        return command, parts[1:]
+
+    def _serialize_attachments(
+        self,
+        attachments: tuple[GatewayAttachment, ...],
+    ) -> list[dict[str, Any]]:
+        serialized: list[dict[str, Any]] = []
+        for attachment in attachments:
+            serialized.append(
+                {
+                    "content_type": attachment.content_type,
+                    "url": attachment.url,
+                    "file_name": attachment.file_name,
+                    "size_bytes": attachment.size_bytes,
+                    "metadata": dict(attachment.metadata),
+                }
+            )
+        return serialized

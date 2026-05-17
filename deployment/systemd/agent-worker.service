@@ -1,7 +1,7 @@
 [Unit]
-Description=AgentOS Worker
+Description=Agent_Sam Worker
 Wants=network-online.target
-After=network-online.target postgresql.service redis.service
+After=network-online.target
 
 [Service]
 Type=simple
@@ -9,7 +9,8 @@ User=__APP_USER__
 Group=__APP_GROUP__
 WorkingDirectory=__APP_DIR__
 EnvironmentFile=__APP_DIR__/.env
-ExecStart=__APP_DIR__/.venv/bin/agent-sam-worker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__APP_DIR__/.venv/bin/python -m workers.main
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

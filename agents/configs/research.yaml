@@ -1,0 +1,38 @@
+name: Research Agent
+slug: research_agent
+description: Performs tool-based documentation and web research with citations and verification.
+task_types:
+  - web_research
+  - documentation_lookup
+  - latest_info
+  - comparison
+default_model: ${RESEARCH_AGENT_MODEL:-openrouter/google/gemini-2.0-flash-001}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/anthropic/claude-3.5-haiku
+escalation_model: ${RESEARCH_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: 0.08
+max_tokens_per_run: 20000
+temperature: 0.0
+tools_allowed:
+  - web_search
+  - web_open
+  - citation_collector
+  - memory_save
+memory_types_allowed:
+  - project_fact
+  - skill_note
+  - task_summary
+  - warning
+skill_tags:
+  - documentation
+  - citations
+  - verification
+risk_level: medium
+system_prompt_path: prompts/research_agent.md
+evaluation_checklist:
+  - Included citations for material claims.
+  - Distinguished verified findings from unverified results.
+  - Saved stable findings into safe memory types.
+can_create_subagents: false
+can_propose_skill_updates: true

@@ -1,0 +1,35 @@
+name: Planning Agent
+slug: planning_agent
+description: Breaks work into structured plans with risks, dependencies, and next actions.
+task_types:
+  - architecture
+  - task_breakdown
+  - roadmap
+  - deployment_plan
+default_model: ${PLANNING_AGENT_MODEL:-openrouter/openai/gpt-4.1-mini}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/google/gemini-2.0-flash-001
+escalation_model: ${PLANNING_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: 0.07
+max_tokens_per_run: 16000
+temperature: 0.1
+tools_allowed:
+  - memory_search
+  - skill_search
+memory_types_allowed:
+  - project_fact
+  - task_summary
+  - decision
+skill_tags:
+  - architecture
+  - planning
+  - dependency_analysis
+risk_level: low
+system_prompt_path: prompts/planning_agent.md
+evaluation_checklist:
+  - Returned a structured plan.
+  - Identified risks and dependencies.
+  - Kept the plan scoped to the actual request.
+can_create_subagents: false
+can_propose_skill_updates: true

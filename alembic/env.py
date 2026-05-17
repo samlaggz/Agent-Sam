@@ -7,6 +7,7 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from app.asyncio_compat import configure_windows_event_loop_policy
 from app.config import get_settings
 from db.base import Base
 from db import models  # noqa: F401
@@ -64,6 +65,7 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
+    configure_windows_event_loop_policy()
     asyncio.run(run_async_migrations())
 
 

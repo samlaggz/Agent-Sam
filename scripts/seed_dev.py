@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.asyncio_compat import configure_windows_event_loop_policy
 from db.models import User, Workspace
 from db.session import AsyncSessionLocal
 
@@ -79,4 +80,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    configure_windows_event_loop_policy()
     asyncio.run(main())

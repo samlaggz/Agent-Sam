@@ -1,0 +1,60 @@
+name: detailed_browsing
+version: 1
+description: Run a bounded, authorization-first browsing workflow for dynamic websites, including approved CAPTCHA-aware handling patterns inspired by Agno + CapSolver, with a domain allowlist and prompt-on-unlisted behavior.
+triggers:
+  - browse website in detail
+  - inspect dynamic website flow
+  - navigate public site with browser automation
+  - reproduce browser-only workflow
+  - handle authorized captcha during browsing
+inputs:
+  - name: task_text
+    type: string
+    required: true
+    description: The user request that defines the browsing task.
+  - name: target_urls
+    type: list[string]
+    required: true
+    description: The exact URLs that are in scope for the browsing session.
+  - name: browsing_goal
+    type: string
+    required: true
+    description: The specific information or action the browsing session must complete.
+  - name: authorization_scope
+    type: string
+    required: true
+    description: The ownership or permission boundary that makes the browsing task allowed.
+  - name: allowed_data_types
+    type: list[string]
+    required: false
+    description: Optional list of data categories that may be collected.
+procedure:
+  - Confirm the approved target URLs, authorization scope, allowed data types, and whether CAPTCHA handling is explicitly permitted before opening a browser.
+  - Check each target host against deployment/captcha_allowlist.yaml before any solver step. If a host is not listed, stop and ask for approval instead of auto-solving.
+  - Start with the lightest viable path first by checking official docs, public APIs, or static fetches before escalating to full browser automation.
+  - When browser automation is required, keep the session bounded, record the exact pages visited, selectors used, screenshots or logs captured, and stop as soon as the browsing goal is satisfied.
+  - For dynamic flows, inspect network requests, DOM changes, redirects, and form behavior before adding retries, waits, or more invasive automation steps.
+  - If an approved CAPTCHA appears on an owned or explicitly permitted target that is already allowlisted, classify the challenge type such as reCAPTCHA v2 or v3, Cloudflare Turnstile, or AWS WAF, and capture only the minimum metadata required for an approved solver flow.
+  - Follow Agno + CapSolver-style operational patterns by using bounded retries, exponential backoff while polling results, balance or credit awareness, and careful token submission or injection only within the approved session.
+  - Summarize the final browsing path, allowlist decision, findings collected, unresolved blockers, approval boundaries, and any artifacts needed for a follow-up step.
+tools_allowed:
+  - shell_command
+  - health_snapshot
+risk_notes:
+  - Only use CAPTCHA handling on sites you own or where you have explicit written permission to automate the flow.
+  - Do not auto-solve CAPTCHA for domains that are not present in deployment/captcha_allowlist.yaml; ask first and wait for approval.
+  - Do not bypass login, paywall, anti-bot, or rate-limit controls on unauthorized third-party properties.
+  - Pause for approval before running browser automation against production systems, using credentials, or spending solver credits.
+  - Minimize retained page data and never store secrets, session tokens, or personal data in the skill output.
+failure_modes:
+  - The target site blocks automation, changes challenge type, or depends on unsupported browser signals.
+  - CAPTCHA solving is unauthorized, unavailable, out of credits, or returns invalid tokens.
+  - The target host is missing from the allowlist, so the workflow must pause and ask before solver use.
+  - The browsing flow depends on private credentials, MFA, or unclear legal permission.
+  - Dynamic navigation succeeds but extraction remains incomplete because selectors, responses, or tokens are unstable.
+evaluation_checklist:
+  - The task includes explicit authorization scope and approved target URLs.
+  - Any target that was not already allowlisted triggered a prompt before solver use.
+  - The workflow used the lightest viable browsing method before escalating to full automation.
+  - Any CAPTCHA handling was explicitly authorized, challenge-typed, and logged with retries or backoff.
+  - The final output lists pages visited, findings, blockers, and any approval or credit issues.

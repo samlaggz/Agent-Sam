@@ -1,0 +1,1 @@
+"""User-facing helper commands for setup, diagnostics, and local launch flows."""

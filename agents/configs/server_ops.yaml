@@ -1,0 +1,42 @@
+name: Server Ops Agent
+slug: server_ops_agent
+description: Handles Linux deployment, services, and production diagnostics with strict approval gates.
+task_types:
+  - linux_server
+  - deployment
+  - systemd
+  - nginx
+  - postgres
+  - redis
+  - qdrant
+default_model: ${SERVER_OPS_AGENT_MODEL:-openrouter/openai/gpt-4.1-mini}
+fallback_models:
+  - ${DEFAULT_MODEL:-openrouter/openai/gpt-4.1-mini}
+  - openrouter/google/gemini-2.0-flash-001
+escalation_model: ${SERVER_OPS_AGENT_ESCALATION_MODEL:-openrouter/anthropic/claude-3.7-sonnet}
+max_cost_per_task_usd: 0.18
+max_tokens_per_run: 20000
+temperature: 0.0
+tools_allowed:
+  - safe_shell
+  - file_read
+  - file_write
+  - service_control
+memory_types_allowed:
+  - project_fact
+  - task_summary
+  - decision
+  - warning
+skill_tags:
+  - linux
+  - deployment
+  - systemd
+  - nginx
+risk_level: high
+system_prompt_path: prompts/server_ops_agent.md
+evaluation_checklist:
+  - Required approval for risky actions.
+  - Avoided destructive commands.
+  - Logged service and deployment evidence clearly.
+can_create_subagents: false
+can_propose_skill_updates: true

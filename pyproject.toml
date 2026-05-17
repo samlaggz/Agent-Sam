@@ -44,7 +44,12 @@ dev = [
 
 [project.scripts]
 agent-sam-api = "app.main:run"
+agent-sam-doctor = "scripts.doctor:run"
+agent-sam-gateways = "gateways.runner:run"
+agent-sam-run = "scripts.run:run"
+agent-sam-setup = "scripts.setup:run"
 agent-sam-worker = "workers.main:run"
+agent-sam-cli = "gateways.cli.main:run"
 agent-sam-telegram = "gateways.telegram.main:run"
 
 [tool.ruff]

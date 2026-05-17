@@ -47,6 +47,7 @@ dev = [
 
 [project.scripts]
 agent-sam = "scripts.cli:run"
+agent-sam-chat = "scripts.chat:run"
 agent-sam-api = "app.main:run"
 agent-sam-doctor = "scripts.doctor:run"
 agent-sam-gateways = "gateways.runner:run"

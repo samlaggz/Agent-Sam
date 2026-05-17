@@ -709,9 +709,9 @@ def _validate_model_name(model_name: str) -> str | None:
 
 def _check_production_runtime_account(*, expected_user: str = PRODUCTION_APP_USER) -> list[DoctorCheck]:
     current_user = getpass.getuser()
-    if current_user == expected_user:
-        return [DoctorCheck("OK", f"Running as {expected_user}")]
-    return [DoctorCheck("WARN", f"Production doctor is running as {current_user}; expected {expected_user}")]
+    if current_user in {expected_user, "root"}:
+        return [DoctorCheck("OK", f"Running as {current_user}")]
+    return [DoctorCheck("WARN", f"Production doctor is running as {current_user}; expected {expected_user} or root")]
 
 
 def _check_app_directory(app_dir: Path, *, expected_user: str = PRODUCTION_APP_USER) -> list[DoctorCheck]:
@@ -738,10 +738,10 @@ def _check_app_directory(app_dir: Path, *, expected_user: str = PRODUCTION_APP_U
         checks.append(DoctorCheck("WARN", f"Application directory ownership check failed: {redact_sensitive_text(str(exc))}"))
         return checks
 
-    if owner_name == expected_user and group_name == expected_user:
-        checks.append(DoctorCheck("OK", f"Application directory is owned by {expected_user}"))
+    if owner_name in {expected_user, "root"} and group_name in {expected_user, "root"}:
+        checks.append(DoctorCheck("OK", f"Application directory is owned by {owner_name}"))
     else:
-        checks.append(DoctorCheck("FAIL", f"Application directory owner/group is {owner_name}:{group_name}, expected {expected_user}:{expected_user}"))
+        checks.append(DoctorCheck("FAIL", f"Application directory owner/group is {owner_name}:{group_name}, expected {expected_user} or root"))
         checks.append(DoctorCheck("FIX", f"Run sudo chown -R {expected_user}:{expected_user} {rendered_app_dir}"))
     return checks
 

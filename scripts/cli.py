@@ -164,7 +164,23 @@ def _interactive_menu() -> None:
 # ─────────────────────────────────────────────
 
 def _start_chat() -> None:
-    print("\nStarting Agent Sam chat shell. Type /exit to leave.\n")
+    # Use the new fullscreen chat if available
+    chat_script = Path(PROJECT_ROOT) / "scripts" / "chat.py"
+    if chat_script.exists():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("scripts.chat", chat_script)
+        if spec is not None and spec.loader is not None:
+            mod = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(mod)  # type: ignore[arg-type]
+                mod.run()
+                return
+            except SystemExit:
+                return
+            except Exception as exc:
+                print(f"  Fullscreen chat failed: {exc}")
+                print("  Falling back to basic CLI...")
+    # Fallback to basic gateway CLI
     cmd = [sys.executable, "-m", "gateways.cli.main"]
     result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
     if result.returncode not in (0, 130):

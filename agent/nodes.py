@@ -245,6 +245,15 @@ class AgentNodeHandlers:
                 pending_approval_id = str(outcome.approval_id) if outcome.approval_id is not None else None
                 break
             if outcome.status == "failed":
+                # For non-critical failures, log and continue to next step
+                tool_name = step.get("tool_name")
+                if tool_name in ("shell_command", "web_search", "web_open") and index < len(plan_steps) - 1:
+                    await self._progress_reporter.report(
+                        task_id,
+                        f"Step {step.get('position', '?')} had an issue but continuing: {outcome.summary[:120]}",
+                        stage="step_warning",
+                    )
+                    continue
                 final_status = "failed"
                 final_summary = outcome.summary
                 break

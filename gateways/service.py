@@ -1129,7 +1129,9 @@ class AgentGatewayService:
         if not _AFFIRMATION_PATTERN.match(normalized_text):
             return None
 
-        history = await self._load_recent_conversation_messages(session, incoming, limit=FOLLOWUP_CONFIRMATION_WINDOW)
+        history = await self._load_recent_conversation_messages(session, incoming, limit=FOLLOWUP_CONFIRMATION_WINDOW * 2)
+
+        # First pass: look for a prior actionable user message
         for item in reversed(history):
             if item["role"] != "user":
                 continue
@@ -1141,6 +1143,21 @@ class AgentGatewayService:
                 continue
             if self._is_current_events_request(prior_normalized) or self._looks_like_task_request(prior_normalized, original_text=prior_text):
                 return prior_text
+
+        # Second pass: look for an assistant message that suggested an action, and build a task from it
+        for item in reversed(history):
+            if item["role"] != "assistant":
+                continue
+            text = item["content"].strip()
+            if any(kw in text.lower() for kw in ("i will", "shall i", "would you like me to", "i can", "next step", "to fix", "to troubleshoot")):
+                # Find the most recent user message that led to this assistant reply
+                for prior in reversed(history):
+                    if prior["role"] == "user" and prior["content"].strip().lower() != normalized_text:
+                        return prior["content"].strip()
+                # No prior user message found — use the assistant suggestion as task context
+                summary_line = text.splitlines()[0][:100]
+                return f"Execute the suggested action: {summary_line}"
+
         return None
 
     async def _load_recent_conversation_messages(

@@ -453,8 +453,7 @@ async def test_natural_language_queue_question_returns_queue_status_without_crea
     )
 
     assert response.task_id is None
-    assert "Queue status" in response.text
-    assert "Pending:" in response.text
+    assert "pending" in response.text.lower()
 
 
 async def test_natural_language_cancel_request_cancels_latest_chat_task(

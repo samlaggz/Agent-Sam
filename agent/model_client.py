@@ -123,7 +123,9 @@ class LiteLLMPlanningModel:
             "Return strict JSON with a top-level 'steps' array. "
             "Each step must include: title, description, tool_name, command, reason. "
             "Use null for tool_name and command when the step is reasoning-only. "
-            "Do not include markdown fences."
+            "Do not include markdown fences. "
+            "IMPORTANT: Never use shell_command to query internal task queues, task databases, or task management systems — "
+            "those are handled natively by the gateway. Only use shell_command for real filesystem, process, or network operations."
         )
         user_prompt = json.dumps(
             self._build_request_payload(

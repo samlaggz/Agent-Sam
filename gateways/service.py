@@ -758,6 +758,21 @@ class AgentGatewayService:
 
         return "\n".join(lines)
 
+    def _format_queue_status_detailed(self, queue_status: dict[str, Any], active_tasks: list[Task]) -> str:
+        pending = queue_status.get("pending", 0)
+        running = queue_status.get("running", 0)
+        paused = queue_status.get("paused", 0)
+        total_active = pending + running + paused
+
+        if total_active == 0:
+            return "No tasks are currently pending, running, or paused."
+
+        lines = [f"There are **{total_active}** active tasks ({pending} pending, {running} running, {paused} paused):"]
+        for task in active_tasks:
+            status_emoji = {"pending": "⏳", "running": "⚙️", "paused": "⏸", "paused_approval": "🔐"}.get(task.status, "•")
+            lines.append(f"{status_emoji} [{task.status}] {task.title} — ID: {task.id}")
+        return "\n".join(lines)
+
     def _help_text(self) -> str:
         return (
             "Agent Sam commands:\n"
@@ -1194,10 +1209,15 @@ class AgentGatewayService:
     ) -> GatewayResponse | None:
         normalized_text = self._normalize_text(incoming.text)
 
-        if self._is_queue_question(normalized_text):
+        if self._is_queue_question(normalized_text) or self._is_queue_question(incoming.text.lower().strip()):
             queue_status = await get_queue_status(session, workspace_id=incoming.workspace_id)
-            pending_tasks = await list_task_queue(session, workspace_id=incoming.workspace_id, limit=5)
-            return GatewayResponse(text=self._format_queue_status(queue_status, pending_tasks))
+            active_tasks = await list_task_queue(
+                session,
+                workspace_id=incoming.workspace_id,
+                statuses=("pending", "running", "paused"),
+                limit=10,
+            )
+            return GatewayResponse(text=self._format_queue_status_detailed(queue_status, active_tasks))
 
         if self._is_cancel_request(normalized_text):
             task = await self._load_recent_task_for_chat(session, incoming)
@@ -1234,10 +1254,20 @@ class AgentGatewayService:
             "what are current queued or running task",
             "what are current queued or running tasks",
             "check queue",
+            "check the queue",
+            "check current task queue",
+            "current task queue",
             "check pending task",
             "check pending tasks",
             "check and tell me if any pending task",
             "check and tell me if any pending tasks",
+            "what tasks are running",
+            "what tasks are pending",
+            "list tasks",
+            "show tasks",
+            "show pending tasks",
+            "show running tasks",
+            "show queue",
         )
         return any(phrase in normalized_text for phrase in phrases)
 

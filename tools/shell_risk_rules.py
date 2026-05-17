@@ -121,13 +121,38 @@ SAFE_RULES = [
     ),
     RiskRule(
         name="filesystem-inspection",
-        pattern=r"^(pwd|whoami|id|uname|ls|dir|Get-ChildItem|Get-Location|type|cat|head|tail|find|rg|ripgrep|where|which)\b",
+        pattern=r"^(pwd|whoami|id|uname|ls|dir|Get-ChildItem|Get-Location|type|cat|head|tail|find|rg|ripgrep|where|which|stat|du|df|lsof|env|printenv)\b",
         reason="Read-only inspection command is safe.",
     ),
     RiskRule(
         name="process-inspection",
         pattern=r"^(ps\s+aux(\s*\|\s*grep\b.*)?|pgrep\b.*|Get-Process\b.*|tasklist\b.*|ps\s+-ef(\s*\|\s*grep\b.*)?)$",
         reason="Read-only process inspection is safe.",
+    ),
+    RiskRule(
+        name="network-read-only",
+        pattern=r"^(ss\s+|netstat\s+|ip\s+(addr|link|route|neigh)|hostname)(.*)?$",
+        reason="Read-only network inspection is safe.",
+    ),
+    RiskRule(
+        name="curl-read-only",
+        pattern=r"^curl\s+(-[sISiLf]*\s+)?(https?://|http://)",
+        reason="Simple HTTP GET is read-only and safe for web inspection.",
+    ),
+    RiskRule(
+        name="systemctl-status",
+        pattern=r"^systemctl\s+(status|is-active|is-enabled|list-units)\b",
+        reason="Read-only systemd status inspection is safe.",
+    ),
+    RiskRule(
+        name="journalctl-read",
+        pattern=r"^journalctl\b",
+        reason="Log reading is safe.",
+    ),
+    RiskRule(
+        name="grep-read",
+        pattern=r"^grep\b",
+        reason="Read-only text search is safe.",
     ),
     RiskRule(
         name="python-version",

@@ -187,6 +187,38 @@ class AgentNodeHandlers:
             if step.get("status") == "completed":
                 continue
 
+            if step.get("status") == "pending_approval":
+                approval_id_hint = step.get("approval_id")
+                if approval_id_hint is not None:
+                    tool_call_id_hint = step.get("tool_call_id")
+                    if tool_call_id_hint is not None:
+                        existing_result = await self._continue_existing_shell_command(
+                            UUID(str(tool_call_id_hint)), cast(PlanStepState, step)
+                        )
+                        if existing_result is not None:
+                            updated_step = await self._apply_step_outcome(
+                                task_snapshot,
+                                cast(PlanStepState, step),
+                                existing_result,
+                                worker_name=worker_name,
+                            )
+                            plan_steps[index] = dict(updated_step)
+                            step_summaries.append(existing_result.summary)
+                            if existing_result.status == "pending_approval":
+                                final_status = "paused"
+                                final_summary = existing_result.summary
+                                pending_approval_id = str(existing_result.approval_id) if existing_result.approval_id is not None else None
+                                break
+                            if existing_result.status == "failed":
+                                final_status = "failed"
+                                final_summary = existing_result.summary
+                                break
+                            continue
+                    final_status = "paused"
+                    final_summary = f"Step {step.get('position', '?')} is waiting for approval."
+                    pending_approval_id = str(approval_id_hint)
+                    break
+
             await self._mark_step_running(step, worker_name=worker_name)
             await self._progress_reporter.report(
                 task_id,

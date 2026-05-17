@@ -4,6 +4,43 @@ set -euo pipefail
 SCRIPT_SOURCE="${BASH_SOURCE[0]:-install.sh}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${SCRIPT_SOURCE}")" >/dev/null 2>&1 && pwd -P || pwd -P)"
 AUTH_TOKEN="${AGENT_SAM_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
+BOOTSTRAP_DIR=""
+
+cleanup_bootstrap_dir() {
+  if [[ -n "${BOOTSTRAP_DIR:-}" ]]; then
+    rm -rf "${BOOTSTRAP_DIR}"
+  fi
+}
+
+requires_interactive_input() {
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in
+      --non-interactive|--dry-run)
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}
+
+ensure_prompt_stdin() {
+  if ! requires_interactive_input "$@"; then
+    return 0
+  fi
+
+  if [[ -t 0 ]]; then
+    return 0
+  fi
+
+  if [[ -r /dev/tty ]]; then
+    exec </dev/tty
+    return 0
+  fi
+
+  echo "Interactive install requires a terminal. Re-run from a TTY or pass --non-interactive with the required env vars set." >&2
+  exit 1
+}
 
 download_installer_asset() {
   local url destination
@@ -33,7 +70,7 @@ download_installer_asset() {
 }
 
 bootstrap_remote_bundle() {
-  local repo_slug repo_ref archive_url bootstrap_dir archive_path
+  local repo_slug repo_ref archive_url archive_path
 
   repo_slug="${AGENT_SAM_INSTALL_REPO:-samlaggz/Agent-Sam}"
   repo_ref="${AGENT_SAM_INSTALL_REF:-main}"
@@ -42,20 +79,15 @@ bootstrap_remote_bundle() {
   else
     archive_url="${AGENT_SAM_INSTALL_ARCHIVE_URL:-https://github.com/${repo_slug}/archive/refs/heads/${repo_ref}.tar.gz}"
   fi
-  bootstrap_dir="$(mktemp -d)"
-  archive_path="${bootstrap_dir}/agent-sam.tar.gz"
-
-  cleanup_bootstrap_dir() {
-    rm -rf "${bootstrap_dir}"
-  }
-
+  BOOTSTRAP_DIR="$(mktemp -d)"
+  archive_path="${BOOTSTRAP_DIR}/agent-sam.tar.gz"
   trap cleanup_bootstrap_dir EXIT
 
   echo "Bootstrapping Agent_Sam installer from ${archive_url}"
   download_installer_asset "${archive_url}" "${archive_path}"
 
-  tar -xzf "${archive_path}" -C "${bootstrap_dir}" --strip-components=1
-  cd "${bootstrap_dir}"
+  tar -xzf "${archive_path}" -C "${BOOTSTRAP_DIR}" --strip-components=1
+  cd "${BOOTSTRAP_DIR}"
 }
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -79,5 +111,7 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
 else
   echo "Installer is running as $(id -un); sudo will be used for host setup when needed."
 fi
+
+ensure_prompt_stdin "$@"
 
 python3 -m scripts.install --production "$@"

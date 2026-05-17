@@ -131,6 +131,12 @@ if [[ "${#MISSING_ENV_KEYS[@]}" -gt 0 ]]; then
   exit 1
 fi
 
+echo "Validating database connectivity"
+if ! "${VENV_DIR}/bin/python" -m scripts.bootstrap_preflight --env-file "${ENV_FILE}"; then
+  echo "Database connectivity preflight failed. Update ${ENV_FILE} and rerun this script." >&2
+  exit 1
+fi
+
 echo "Running database migrations"
 "${VENV_DIR}/bin/python" -m alembic upgrade head
 

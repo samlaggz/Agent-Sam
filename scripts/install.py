@@ -260,6 +260,8 @@ def _run_production_install(
             ".git",
             "--exclude",
             ".venv",
+            "--exclude",
+            ".env",
             f"{repo_root}{os.sep}",
             f"{rendered_target}/",
         ],

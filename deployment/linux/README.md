@@ -43,7 +43,7 @@ This deployment path is for a Linux host without Docker. The application runs as
 3. Sync the application checkout into `/opt/agent-sam` and hand ownership to `agentos`:
 
    ```bash
-   sudo rsync -a --delete --exclude '.git' --exclude '.venv' ./ /opt/agent-sam/
+   sudo rsync -a --delete --exclude '.git' --exclude '.venv' --exclude '.env' ./ /opt/agent-sam/
    sudo chown -R agentos:agentos /opt/agent-sam
    ```
 
@@ -79,6 +79,30 @@ This deployment path is for a Linux host without Docker. The application runs as
    sudo systemctl enable agent-api agent-worker agent-telegram
    sudo systemctl start agent-api agent-worker agent-telegram
    ```
+
+## Updating an existing deployment
+
+`/opt/agent-sam` may be a synced application directory rather than a git checkout. If `git pull` fails with `not a git repository`, use one of these update paths instead.
+
+Preferred update path:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/samlaggz/Agent-Sam/main/install.sh) --target /opt/agent-sam
+```
+
+Manual update path:
+
+```bash
+tmpdir="$(mktemp -d)"
+curl -fsSL https://github.com/samlaggz/Agent-Sam/archive/refs/heads/main.tar.gz -o "${tmpdir}/agent-sam.tar.gz"
+tar -xzf "${tmpdir}/agent-sam.tar.gz" -C "${tmpdir}" --strip-components=1
+sudo rsync -a --delete --exclude '.git' --exclude '.venv' --exclude '.env' "${tmpdir}/" /opt/agent-sam/
+sudo chown -R agentos:agentos /opt/agent-sam
+sudo -u agentos bash -lc 'cd /opt/agent-sam && /opt/agent-sam/.venv/bin/pip install --upgrade . && /opt/agent-sam/.venv/bin/python -m alembic upgrade head'
+sudo systemctl restart agent-api agent-worker agent-telegram
+sudo -u agentos bash -lc 'cd /opt/agent-sam && /opt/agent-sam/.venv/bin/python -m scripts.doctor --production --env-path /opt/agent-sam/.env --app-dir /opt/agent-sam'
+rm -rf "${tmpdir}"
+```
 
 ## Direct production commands
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -83,6 +84,7 @@ class AgentNodeHandlers:
         self._shell_tool = cast(ShellCommandTool, self._runtime_tool_registry["shell_command"])
         self._web_tool = cast(WebResearchTool | None, self._runtime_tool_registry.get("web_search"))
         roots = list(allowed_tool_roots or [Path.cwd()])
+        self._allowed_tool_roots = [Path(root).resolve() for root in roots]
         self._default_working_directory = Path(roots[0]).resolve()
 
     # ── Graph nodes ───────────────────────────────────────────────────
@@ -674,6 +676,15 @@ class AgentNodeHandlers:
             if tc.name == "save_memory":
                 return await self._exec_save_memory(task_snapshot, tc)
 
+            if tc.name == "file_read":
+                return await self._exec_file_read(tc)
+
+            if tc.name == "file_write":
+                return await self._exec_file_write(tc)
+
+            if tc.name == "grep":
+                return await self._exec_grep(task_snapshot, tc)
+
             if tc.name == "browser_navigate":
                 return await self._exec_browser_navigate(task_snapshot, tc)
 
@@ -828,6 +839,84 @@ class AgentNodeHandlers:
         except Exception as exc:
             return f"Failed to save memory: {exc}", "failed"
 
+    async def _exec_file_read(self, tc: ToolCallRequest) -> tuple[str, str]:
+        path = tc.arguments.get("path", "").strip()
+        if not path:
+            return "Error: no path provided.", "failed"
+
+        resolved = self._resolve_allowed_path(path)
+        if resolved is None:
+            return f"Path is outside the allowed roots: {path}", "failed"
+        if not resolved.exists() or not resolved.is_file():
+            return f"File does not exist: {resolved}", "failed"
+
+        content = resolved.read_text(encoding="utf-8", errors="replace")
+        if len(content) > 8000:
+            content = content[:8000] + "\n... [truncated]"
+        return f"Path: {resolved}\n{content}", "completed"
+
+    async def _exec_file_write(self, tc: ToolCallRequest) -> tuple[str, str]:
+        path = tc.arguments.get("path", "").strip()
+        content = tc.arguments.get("content")
+        append = bool(tc.arguments.get("append", False))
+        if not path:
+            return "Error: no path provided.", "failed"
+        if content is None:
+            return "Error: no content provided.", "failed"
+
+        resolved = self._resolve_allowed_path(path)
+        if resolved is None:
+            return f"Path is outside the allowed roots: {path}", "failed"
+
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if append else "w"
+        with resolved.open(mode, encoding="utf-8") as handle:
+            handle.write(str(content))
+        action = "Appended to" if append else "Wrote"
+        return f"{action} {resolved}", "completed"
+
+    async def _exec_grep(self, task_snapshot: TaskSnapshot, tc: ToolCallRequest) -> tuple[str, str]:
+        query = tc.arguments.get("query", "")
+        if not str(query).strip():
+            return "Error: no query provided.", "failed"
+
+        raw_path = tc.arguments.get("path", self._resolve_working_directory(task_snapshot))
+        resolved = self._resolve_allowed_path(str(raw_path))
+        if resolved is None:
+            return f"Path is outside the allowed roots: {raw_path}", "failed"
+        if not resolved.exists():
+            return f"Path does not exist: {resolved}", "failed"
+
+        is_regex = bool(tc.arguments.get("is_regex", False))
+        max_results = min(max(int(tc.arguments.get("max_results", 50)), 1), 200)
+        matcher = re.compile(str(query)) if is_regex else None
+        matches: list[str] = []
+
+        candidates = [resolved] if resolved.is_file() else [path for path in resolved.rglob("*") if path.is_file()]
+        for candidate in candidates:
+            try:
+                relative = candidate.relative_to(self._default_working_directory)
+            except ValueError:
+                relative = candidate
+            try:
+                with candidate.open("r", encoding="utf-8", errors="replace") as handle:
+                    for line_no, line in enumerate(handle, start=1):
+                        haystack = line.rstrip("\n")
+                        matched = bool(matcher.search(haystack)) if matcher else str(query) in haystack
+                        if not matched:
+                            continue
+                        matches.append(f"{relative}:{line_no}:{haystack}")
+                        if len(matches) >= max_results:
+                            break
+            except OSError:
+                continue
+            if len(matches) >= max_results:
+                break
+
+        if not matches:
+            return f"No matches found for {query!r} under {resolved}", "completed"
+        return "\n".join(matches), "completed"
+
     # ── Browser tool execution ────────────────────────────────────────
 
     async def _get_browser(self):
@@ -923,6 +1012,10 @@ class AgentNodeHandlers:
     def _summarize_tool_args(self, tc: ToolCallRequest) -> str:
         if tc.name == "shell_command":
             return tc.arguments.get("command", "")[:100]
+        if tc.name in ("file_read", "file_write"):
+            return tc.arguments.get("path", "")[:100]
+        if tc.name == "grep":
+            return tc.arguments.get("query", "")[:80]
         if tc.name == "web_search":
             return tc.arguments.get("query", "")[:80]
         if tc.name == "web_open":
@@ -932,6 +1025,13 @@ class AgentNodeHandlers:
         if tc.name in ("task_complete", "task_failed"):
             return tc.arguments.get("summary", tc.arguments.get("reason", ""))[:80]
         return json.dumps(tc.arguments)[:80]
+
+    def _resolve_allowed_path(self, raw_path: str) -> Path | None:
+        candidate = Path(raw_path)
+        resolved = candidate.resolve() if candidate.is_absolute() else (self._default_working_directory / candidate).resolve()
+        if any(resolved.is_relative_to(root) for root in self._allowed_tool_roots):
+            return resolved
+        return None
 
     def _extract_approval_id(self, text: str) -> str | None:
         import re

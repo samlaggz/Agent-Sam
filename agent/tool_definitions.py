@@ -15,8 +15,10 @@ def shell_command_tool() -> dict[str, Any]:
         "function": {
             "name": "shell_command",
             "description": (
-                "Execute a shell command on the server. Use for: file operations, "
-                "service management, package installs, config changes, diagnostics. "
+                "Execute a shell command on the server. Use for: service management, "
+                "package installs, process diagnostics, network checks, and other OS operations. "
+                "If file_read, file_write, or grep are in your tool list, prefer them over shell "
+                "for filesystem inspection and editing. "
                 "Always use absolute paths. For creating files, use tee with heredoc:\n"
                 "tee /path/to/file > /dev/null << 'EOF'\ncontent\nEOF\n"
                 "Before symlinking nginx configs, remove broken symlinks first:\n"
@@ -39,6 +41,95 @@ def shell_command_tool() -> dict[str, Any]:
                     },
                 },
                 "required": ["command", "reason"],
+            },
+        },
+    }
+
+
+def file_read_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "file_read",
+            "description": (
+                "Read a text file from the allowed workspace or server roots. "
+                "Prefer this over shell cat for inspecting files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path or allowed-root-relative path to the file.",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    }
+
+
+def file_write_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "file_write",
+            "description": (
+                "Write text content to a file within the allowed workspace or server roots. "
+                "Creates parent directories if needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path or allowed-root-relative path to the file.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The full text content to write.",
+                    },
+                    "append": {
+                        "type": "boolean",
+                        "description": "If true, append instead of replacing the file. Default false.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    }
+
+
+def grep_tool() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": (
+                "Search for text in a file or recursively under a directory within the allowed roots. "
+                "Returns matching paths, line numbers, and line text."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text or regex pattern to search for.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Optional file or directory path. Defaults to the task working directory.",
+                    },
+                    "is_regex": {
+                        "type": "boolean",
+                        "description": "Treat query as a regular expression. Default false.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of matches to return. Default 50.",
+                    },
+                },
+                "required": ["query"],
             },
         },
     }
@@ -313,6 +404,8 @@ def build_tool_definitions(
     shell_enabled: bool = True,
     web_enabled: bool = False,
     browser_enabled: bool = False,
+    file_enabled: bool = False,
+    grep_enabled: bool = False,
     memory_enabled: bool = True,
 ) -> list[dict[str, Any]]:
     """Build the tool list based on agent capabilities."""
@@ -320,6 +413,11 @@ def build_tool_definitions(
 
     if shell_enabled:
         tools.append(shell_command_tool())
+    if file_enabled:
+        tools.append(file_read_tool())
+        tools.append(file_write_tool())
+    if grep_enabled:
+        tools.append(grep_tool())
     if web_enabled:
         tools.append(web_search_tool())
         tools.append(web_open_tool())

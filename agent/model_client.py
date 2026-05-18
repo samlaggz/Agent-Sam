@@ -294,10 +294,14 @@ class HermesModelClient:
         shell_enabled = self._has_shell_access()
         web_enabled = self._settings.enable_web_research and self._has_web_access()
         browser_enabled = self._is_browser_available()
+        file_enabled = self._has_file_access()
+        grep_enabled = self._has_grep_access()
         return build_tool_definitions(
             shell_enabled=shell_enabled,
             web_enabled=web_enabled,
             browser_enabled=browser_enabled,
+            file_enabled=file_enabled,
+            grep_enabled=grep_enabled,
             memory_enabled=True,
         )
 
@@ -325,6 +329,16 @@ class HermesModelClient:
             for t in ("safe_shell", "service_control", "file_read", "file_write", "grep", "pytest")
         )
 
+    def _has_file_access(self) -> bool:
+        if not self._profile:
+            return True
+        return any(t in self._profile.tools_allowed for t in ("file_read", "file_write"))
+
+    def _has_grep_access(self) -> bool:
+        if not self._profile:
+            return True
+        return "grep" in self._profile.tools_allowed
+
     def _has_web_access(self) -> bool:
         if not self._profile:
             return False
@@ -342,20 +356,21 @@ class HermesModelClient:
             "3. If a command fails, read the error and try a different approach.\n"
             "4. Always VERIFY your work with a final check (curl, ls, cat, nginx -t, etc.).\n"
             "5. Use absolute paths. Never use placeholder paths like <folder_path>.\n"
-            "6. To create files, use: tee /path/file > /dev/null << 'EOF'\\ncontent\\nEOF\n"
-            "7. Before symlinking nginx configs, clean broken symlinks:\n"
+            "6. If file_read, file_write, or grep are in your tool list, prefer them over shell for filesystem work.\n"
+            "7. To create files from shell when file_write is unavailable, use: tee /path/file > /dev/null << 'EOF'\\ncontent\\nEOF\n"
+            "8. Before symlinking nginx configs, clean broken symlinks:\n"
             "   find /etc/nginx/sites-enabled/ -xtype l -delete\n"
-            "8. When done and verified, call task_complete with a clear summary.\n"
-            "9. If you cannot complete the task after trying, call task_failed with the reason.\n"
-            "10. Save important discoveries to memory (server_fact, decision, warning).\n"
-            "11. Keep commands concise. One logical action per tool call.\n"
-            "12. NEVER cat a file that doesn't exist. Create it first.\n"
-            "13. NEVER use sudo — you are already running as root.\n"
-            "14. When a command fails with a non-zero exit code, READ the error output carefully "
+            "9. When done and verified, call task_complete with a clear summary.\n"
+            "10. If you cannot complete the task after trying, call task_failed with the reason.\n"
+            "11. Save important discoveries to memory (server_fact, decision, warning).\n"
+            "12. Keep commands concise. One logical action per tool call.\n"
+            "13. NEVER cat a file that doesn't exist. Create it first.\n"
+            "14. NEVER use sudo — you are already running as root.\n"
+            "15. When a command fails with a non-zero exit code, READ the error output carefully "
             "and fix the issue. Do NOT repeat the same failing command.\n"
-            "15. NEVER call task_complete if you only asked a question or requested clarification. "
+            "16. NEVER call task_complete if you only asked a question or requested clarification. "
             "If you need more info, call task_failed with a clear question.\n"
-            "16. If browser tools are available (browser_navigate, browser_click, browser_type), "
+            "17. If browser tools are available (browser_navigate, browser_click, browser_type), "
             "use them to interact with websites — log in, fill forms, click buttons, read pages. "
             "If browser tools are NOT in your tool list, you cannot interact with web UIs.\n"
             "17. READ the conversation context in the task description carefully. It contains "

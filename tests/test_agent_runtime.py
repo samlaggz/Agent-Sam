@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -489,3 +489,59 @@ async def test_default_allowed_tool_roots_include_common_linux_paths(monkeypatch
 
     assert any(root.endswith("/opt") or root == "/opt" for root in rendered_roots)
     assert any(root.endswith("/var") or root == "/var" for root in rendered_roots)
+
+
+async def test_agent_node_filesystem_tools_respect_allowed_roots(
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    from agent.model_client import LiteLLMPlanningModel, ToolCallRequest
+    from agent.nodes import AgentNodeHandlers
+
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    target_file = allowed_root / "notes.txt"
+    target_file.write_text("hello\nworld\n", encoding="utf-8")
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    blocked_file = outside_root / "blocked.txt"
+    blocked_file.write_text("secret\n", encoding="utf-8")
+
+    handlers = AgentNodeHandlers(
+        session_factory,
+        settings=Settings(_env_file=None, litellm_model="test-model"),
+        planning_model=LiteLLMPlanningModel(Settings(_env_file=None, litellm_model="test-model"), session_factory),
+        progress_reporter=FakeProgressReporter(),
+        skills_root=tmp_path / "skills",
+        allowed_tool_roots=[allowed_root],
+    )
+
+    read_result, read_status = await handlers._execute_tool_call(
+        {"id": str(uuid4()), "workspace_id": str(uuid4()), "metadata_json": {}},
+        ToolCallRequest(id="1", name="file_read", arguments={"path": str(target_file)}),
+        [],
+    )
+    grep_result, grep_status = await handlers._execute_tool_call(
+        {"id": str(uuid4()), "workspace_id": str(uuid4()), "metadata_json": {}},
+        ToolCallRequest(id="2", name="grep", arguments={"query": "world", "path": str(allowed_root)}),
+        [],
+    )
+    write_result, write_status = await handlers._execute_tool_call(
+        {"id": str(uuid4()), "workspace_id": str(uuid4()), "metadata_json": {}},
+        ToolCallRequest(id="3", name="file_write", arguments={"path": str(allowed_root / "new.txt"), "content": "new content"}),
+        [],
+    )
+    blocked_result, blocked_status = await handlers._execute_tool_call(
+        {"id": str(uuid4()), "workspace_id": str(uuid4()), "metadata_json": {}},
+        ToolCallRequest(id="4", name="file_read", arguments={"path": str(blocked_file)}),
+        [],
+    )
+
+    assert read_status == "completed"
+    assert "hello" in read_result
+    assert grep_status == "completed"
+    assert "notes.txt:2:world" in grep_result.replace("\\", "/")
+    assert write_status == "completed"
+    assert (allowed_root / "new.txt").read_text(encoding="utf-8") == "new content"
+    assert blocked_status == "failed"
+    assert "outside the allowed roots" in blocked_result

@@ -18,3 +18,18 @@ def test_planning_model_includes_web_tools_for_research_agent(session_factory) -
 
     assert "web_search" in tool_names
     assert "web_open" in tool_names
+
+
+def test_planning_model_includes_filesystem_tools_for_server_ops_agent(session_factory) -> None:
+    model = LiteLLMPlanningModel(
+        Settings(_env_file=None, openrouter_api_key="test-key"),
+        session_factory,
+        profile=get_agent_profile("server_ops_agent"),
+    )
+
+    tool_defs = model.hermes_client.get_tool_definitions()
+    tool_names = [t["function"]["name"] for t in tool_defs]
+
+    assert "file_read" in tool_names
+    assert "file_write" in tool_names
+    assert "grep" not in tool_names

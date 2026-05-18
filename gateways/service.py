@@ -32,10 +32,16 @@ from gateways.base import GatewayAttachment, GatewayResponse, IncomingGatewayMes
 from harness.workspace import WorkspaceManager
 from services.agent_learning_service import approve_skill_proposal, approve_sub_agent_proposal
 from services.budget_service import estimate_model_cost_level
+from services.coding_workflow_service import (
+    WorkflowTaskDraft,
+    build_code_task_draft,
+    build_pr_task_draft,
+    build_task_title,
+    build_test_task_draft,
+)
 from services.model_router import ModelExecutionRequest, ModelRouter, infer_provider
 
 
-MAX_TASK_TITLE_LENGTH = 80
 INLINE_CHAT_MAX_TOKENS = 400
 INTENT_CLASSIFIER_MAX_TOKENS = 32
 FOLLOWUP_CONFIRMATION_WINDOW = 6
@@ -439,12 +445,15 @@ class AgentGatewayService:
     ) -> GatewayResponse:
         if not arguments:
             return GatewayResponse(text="Usage: /code <task description>")
-        task = await self._create_task_from_text(
+        conversation_context = await self._build_conversation_context(session, incoming)
+        task = await self._create_task_from_draft(
             session,
             incoming,
             message,
-            task_text=" ".join(arguments).strip(),
-            metadata_overrides={"requested_agent": "coding_agent", "harness_requested": True, "workflow": "code"},
+            build_code_task_draft(
+                task_text=" ".join(arguments).strip(),
+                conversation_context=conversation_context,
+            ),
         )
         route_preview = self._route_task_preview(task.title, task.description or "")
         return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
@@ -464,20 +473,12 @@ class AgentGatewayService:
         parent_task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
         if parent_task is None:
             return GatewayResponse(text="Task not found in the selected workspace.")
-        task = await create_task_request(
+        task = await self._create_task_from_draft(
             session,
-            workspace_id=incoming.workspace_id,
-            parent_task_id=parent_task.id,
-            title=f"Test: {parent_task.title}",
-            description=f"Run focused tests and validation for task {parent_task.id}: {parent_task.title}",
-            created_by_user_id=incoming.user_id,
-            metadata_json=self._build_task_request_metadata(
-                incoming,
-                message,
-                {"requested_agent": "testing_agent", "harness_requested": True, "workflow": "test", "target_task_id": str(parent_task.id)},
-            ),
+            incoming,
+            message,
+            build_test_task_draft(parent_task_id=parent_task.id, parent_task_title=parent_task.title),
         )
-        await self._link_message_to_task(session, message, task.id)
         route_preview = self._route_task_preview(task.title, task.description or "")
         return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
 
@@ -496,20 +497,12 @@ class AgentGatewayService:
         parent_task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
         if parent_task is None:
             return GatewayResponse(text="Task not found in the selected workspace.")
-        task = await create_task_request(
+        task = await self._create_task_from_draft(
             session,
-            workspace_id=incoming.workspace_id,
-            parent_task_id=parent_task.id,
-            title=f"Prepare PR: {parent_task.title}",
-            description=f"Create a branch, commit changes, push, and open a PR for task {parent_task.id}: {parent_task.title}",
-            created_by_user_id=incoming.user_id,
-            metadata_json=self._build_task_request_metadata(
-                incoming,
-                message,
-                {"requested_agent": "coding_agent", "harness_requested": True, "workflow": "pr", "target_task_id": str(parent_task.id)},
-            ),
+            incoming,
+            message,
+            build_pr_task_draft(parent_task_id=parent_task.id, parent_task_title=parent_task.title),
         )
-        await self._link_message_to_task(session, message, task.id)
         route_preview = self._route_task_preview(task.title, task.description or "")
         return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
 
@@ -806,7 +799,7 @@ class AgentGatewayService:
         if conversation_context:
             description = f"{normalized_text}\n\n## Recent conversation context:\n{conversation_context}"
 
-        title = self._build_task_title(normalized_text)
+        title = build_task_title(normalized_text)
         task = await create_task_request(
             session,
             workspace_id=incoming.workspace_id,
@@ -814,6 +807,25 @@ class AgentGatewayService:
             description=description,
             created_by_user_id=incoming.user_id,
             metadata_json=self._build_task_request_metadata(incoming, message, metadata_overrides),
+        )
+        await self._link_message_to_task(session, message, task.id)
+        return task
+
+    async def _create_task_from_draft(
+        self,
+        session: AsyncSession,
+        incoming: IncomingGatewayMessage,
+        message: Message,
+        task_draft: WorkflowTaskDraft,
+    ) -> Task:
+        task = await create_task_request(
+            session,
+            workspace_id=incoming.workspace_id,
+            parent_task_id=task_draft.parent_task_id,
+            title=task_draft.title,
+            description=task_draft.description,
+            created_by_user_id=incoming.user_id,
+            metadata_json=self._build_task_request_metadata(incoming, message, task_draft.metadata_overrides),
         )
         await self._link_message_to_task(session, message, task.id)
         return task
@@ -884,12 +896,6 @@ class AgentGatewayService:
         if metadata_extra:
             metadata.update(metadata_extra)
         return metadata
-
-    def _build_task_title(self, text: str) -> str:
-        first_line = next((line.strip() for line in text.splitlines() if line.strip()), text.strip())
-        if len(first_line) <= MAX_TASK_TITLE_LENGTH:
-            return first_line
-        return f"{first_line[: MAX_TASK_TITLE_LENGTH - 3].rstrip()}..."
 
     def _format_task_confirmation(self, task: Task, *, route_preview=None) -> str:
         message = "Got it — I'm on it."

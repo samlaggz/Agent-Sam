@@ -273,6 +273,10 @@ class BrowserTool:
                 pass
             self._playwright = None
 
+    async def close(self) -> None:
+        """Compatibility alias for callers expecting a single close() method."""
+        await self.close_all()
+
     # ── Snapshot building ─────────────────────────────────────────────
 
     async def _build_snapshot(self, page: Any, *, full: bool = False) -> str:

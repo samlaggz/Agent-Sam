@@ -128,7 +128,9 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     approvals: Mapped[list["Approval"]] = relationship(back_populates="task")
     model_calls: Mapped[list["ModelCall"]] = relationship(back_populates="task")
     agent_runs: Mapped[list["AgentRun"]] = relationship(back_populates="task")
+    agent_events: Mapped[list["AgentEvent"]] = relationship(back_populates="task")
     learning_events: Mapped[list["LearningEvent"]] = relationship(back_populates="task")
+    runtime_workspaces: Mapped[list["WorkspaceRuntime"]] = relationship(back_populates="task")
 
 
 class Message(UUIDPrimaryKeyMixin, Base):
@@ -601,6 +603,7 @@ class AgentRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     task: Mapped[Task | None] = relationship(back_populates="agent_runs")
     task_run: Mapped[TaskRun | None] = relationship(back_populates="agent_runs")
+    events: Mapped[list["AgentEvent"]] = relationship(back_populates="agent_run")
     steps: Mapped[list["AgentRunStep"]] = relationship(back_populates="agent_run")
     evaluations: Mapped[list["AgentEvaluation"]] = relationship(back_populates="agent_run")
 
@@ -729,3 +732,58 @@ class ModelBudget(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=dict,
         server_default=EMPTY_JSON_OBJECT,
     )
+
+
+class AgentEvent(UUIDPrimaryKeyMixin, Base):
+    __tablename__ = "agent_events"
+    __table_args__ = (
+        Index("ix_agent_events_task_sequence", "task_id", "sequence"),
+        Index("ix_agent_events_run_sequence", "agent_run_id", "sequence"),
+    )
+
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    agent_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(64))
+    content: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )
+    parent_event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    task: Mapped[Task | None] = relationship(back_populates="agent_events")
+    agent_run: Mapped[AgentRun | None] = relationship(back_populates="events")
+    parent_event: Mapped["AgentEvent"] = relationship(
+        remote_side="AgentEvent.id",
+        back_populates="child_events",
+    )
+    child_events: Mapped[list["AgentEvent"]] = relationship(back_populates="parent_event")
+
+
+class WorkspaceRuntime(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "workspaces_runtime"
+    __table_args__ = (Index("ix_workspaces_runtime_task_status_created", "task_id", "status", "created_at"),)
+
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"))
+    path: Mapped[str] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(32), default="active", server_default=text("'active'"))
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON_VARIANT,
+        default=dict,
+        server_default=EMPTY_JSON_OBJECT,
+    )
+
+    task: Mapped[Task] = relationship(back_populates="runtime_workspaces")

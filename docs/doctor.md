@@ -40,6 +40,18 @@ The doctor checks:
 - shell risk rules loading
 - specialist schema tables
 
+When `HARNESS_ENABLED=true`, doctor also checks:
+
+- harness module imports
+- workspace directory existence and writability
+- source cache directory existence and writability
+- `opensrc` availability when source cache is enabled
+- `rg` availability when source cache is enabled
+- Playwright imports when browser automation is enabled
+- GitHub token presence when automatic PR creation is enabled
+- runtime policy validity
+- non-root execution in production
+
 Production mode also checks:
 
 - application directory presence and ownership

@@ -10,7 +10,7 @@ def test_run_setup_local_mode_updates_seeded_ids_and_gateway_env(tmp_path: Path)
     env_path = tmp_path / ".env"
     env_path.write_text("DATABASE_URL=postgresql+psycopg://example\nREDIS_URL=redis://localhost:6379/0\nQDRANT_URL=http://localhost:6333\n", encoding="utf-8")
 
-    prompt_values = iter(["y", "cli", ""])
+    prompt_values = iter(["y", "cli", "", "n"])
     outputs: list[str] = []
 
     def fake_command_runner(command, *, cwd, capture_output):

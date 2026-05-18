@@ -178,6 +178,7 @@ def _run_local_development_setup(
 
     _configure_gateway_defaults(env_path, wizard_io, dry_run=False)
     _configure_model_routing(env_path, wizard_io, dry_run=False)
+    _configure_harness_runtime(env_path, wizard_io, dry_run=False)
     test_gateway_config(env_path, output=wizard_io.output)
     print_next_commands(wizard_io.output, DEFAULT_NEXT_COMMANDS)
     return 0
@@ -198,7 +199,8 @@ def _run_cli_only_setup(
 
     update_env_values(env_path, {"ENABLED_GATEWAYS": "cli"})
     settings = Settings(_env_file=env_path)
-    if settings.default_workspace_id is None or settings.default_user_id is None:
+    env_values = load_env_values(env_path)
+    if not env_values.get("DEFAULT_WORKSPACE_ID") or not env_values.get("DEFAULT_USER_ID"):
         if asyncio.run(_database_is_reachable(settings)):
             if _seed_default_ids(env_path, wizard_io, command_runner, dry_run=False) != 0:
                 return 1
@@ -234,6 +236,7 @@ def _run_linux_production_setup(
     }
     updates.update(_collect_production_gateway_updates(env_values, wizard_io, dry_run=dry_run))
     updates.update(_configure_model_routing(env_path, wizard_io, dry_run=dry_run, persist=False))
+    updates.update(_configure_harness_runtime(env_path, wizard_io, dry_run=dry_run, persist=False))
 
     if dry_run:
         wizard_io.output(f"Dry run: would update {env_path} for Linux production")
@@ -388,6 +391,82 @@ def _configure_model_routing(
         wizard_io.output("Model routing saved.")
     elif dry_run:
         wizard_io.output("Dry run: would update specialist routing and budget settings.")
+    return updates
+
+
+def _configure_harness_runtime(
+    env_path: Path,
+    wizard_io: SetupIO,
+    *,
+    dry_run: bool,
+    persist: bool = True,
+) -> dict[str, str]:
+    env_values = load_env_values(env_path)
+    current_enabled = (env_values.get("HARNESS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"})
+    if dry_run:
+        wizard_io.output("Dry run: would configure harness, workspaces, browser, source cache, and GitHub PR automation.")
+        return {}
+
+    harness_enabled = _prompt_yes_no(wizard_io, "Enable the harness runtime?", default=current_enabled)
+    if not harness_enabled:
+        updates = {"HARNESS_ENABLED": "false"}
+        if persist and not dry_run:
+            update_env_file(env_path, updates)
+            wizard_io.output("Harness runtime disabled.")
+        return updates
+
+    workspace_dir = (
+        wizard_io.prompt(f"Harness workspace dir [{env_values.get('AGENT_WORKSPACES_DIR', './workspaces')}]: ").strip()
+        or env_values.get("AGENT_WORKSPACES_DIR", "./workspaces")
+    )
+    browser_enabled = _prompt_yes_no(
+        wizard_io,
+        "Enable browser automation in the harness?",
+        default=env_values.get("BROWSER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
+    )
+    source_cache_enabled = _prompt_yes_no(
+        wizard_io,
+        "Enable offline source cache with opensrc?",
+        default=env_values.get("SOURCE_CACHE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"},
+    )
+    github_auto_pr = _prompt_yes_no(
+        wizard_io,
+        "Enable automatic GitHub PR creation?",
+        default=env_values.get("GITHUB_AUTO_CREATE_PR", "false").strip().lower() in {"1", "true", "yes", "on"},
+    )
+
+    updates = {
+        "HARNESS_ENABLED": "true" if harness_enabled else "false",
+        "AGENT_RUNTIME": env_values.get("AGENT_RUNTIME", "local") or "local",
+        "AGENT_WORKSPACES_DIR": workspace_dir,
+        "BROWSER_ENABLED": "true" if browser_enabled else "false",
+        "SOURCE_CACHE_ENABLED": "true" if source_cache_enabled else "false",
+        "GITHUB_AUTO_CREATE_PR": "true" if github_auto_pr else "false",
+    }
+
+    if source_cache_enabled:
+        updates["SOURCE_CACHE_DIR"] = env_values.get("SOURCE_CACHE_DIR", "./source-cache") or "./source-cache"
+        updates["OPENSRC_COMMAND"] = env_values.get("OPENSRC_COMMAND", "opensrc") or "opensrc"
+        updates["RIPGREP_COMMAND"] = env_values.get("RIPGREP_COMMAND", "rg") or "rg"
+        if _prompt_yes_no(wizard_io, "Show install command for opensrc?", default=False):
+            wizard_io.output("Install opensrc with: npm install -g opensrc")
+        if _prompt_yes_no(wizard_io, "Show install command for ripgrep?", default=False):
+            wizard_io.output("Install ripgrep using your OS package manager or https://github.com/BurntSushi/ripgrep/releases")
+
+    if github_auto_pr or env_values.get("GITHUB_TOKEN", ""):
+        updates["GITHUB_TOKEN"] = _prompt_optional_secret(
+            wizard_io,
+            key="GITHUB_TOKEN",
+            existing_value=env_values.get("GITHUB_TOKEN", ""),
+        )
+        updates["GITHUB_REPOSITORY"] = (
+            wizard_io.prompt(f"GITHUB_REPOSITORY [{env_values.get('GITHUB_REPOSITORY', '')}]: ").strip()
+            or env_values.get("GITHUB_REPOSITORY", "")
+        )
+
+    if persist and not dry_run:
+        update_env_file(env_path, updates)
+        wizard_io.output("Harness runtime settings saved.")
     return updates
 
 

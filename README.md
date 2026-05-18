@@ -34,6 +34,7 @@ Agent_Sam now includes a specialist multi-agent runtime with profile-based routi
 ```text
 app/                FastAPI application
 agent/              LangGraph state, nodes, and graph assembly
+harness/            OpenHands-style execution loop, runtime, tools, and workspaces
 gateways/           External entry points such as Telegram, CLI, and webhooks
 workers/            Background task worker skeleton
 db/                 SQLAlchemy models and session helpers
@@ -153,6 +154,33 @@ If `ENABLE_WEB_RESEARCH=true`, requests such as checking the internet, finding t
 - `/skills approve <proposal_id>`
 - `/subagents pending`
 - `/subagents approve <proposal_id>`
+- `/code <task description>`
+- `/test <task_id>`
+- `/pr <task_id>`
+- `/events <task_id>`
+- `/workspace <task_id>`
+
+## OpenHands-style harness
+
+Agent_Sam now includes an OpenHands-inspired harness layer that stays under the existing LangGraph specialist runtime instead of replacing it. When `HARNESS_ENABLED=true`, coding, testing, browser, and server-oriented tasks can run through a typed action/observation loop with:
+
+- append-only `agent_events` history
+- task-scoped workspaces under `AGENT_WORKSPACES_DIR`
+- patch-based file editing with rollback metadata
+- approval-gated installs, GitHub actions, and risky browser flows
+- LiteLLM/OpenRouter model calls through the existing `ModelRouter`
+- offline dependency source lookup through `opensrc`
+
+See the harness docs for the exact behavior and configuration:
+
+- `docs/openhands-adaptation.md`
+- `docs/harness.md`
+- `docs/events.md`
+- `docs/workspaces.md`
+- `docs/tool-system.md`
+- `docs/source-cache.md`
+- `docs/github-automation.md`
+- `docs/coding-workflow.md`
 
 ## Troubleshooting
 
@@ -165,6 +193,16 @@ If `ENABLE_WEB_RESEARCH=true`, requests such as checking the internet, finding t
 - Telegram CancelledError on Ctrl+C: expected shutdown is now suppressed; if you still see a token in logs, rotate it.
 
 See `docs/setup.md`, `docs/doctor.md`, `docs/gateways.md`, and `docs/troubleshooting.md` for the full walkthroughs.
+
+Harness docs:
+
+- `docs/harness.md`
+- `docs/events.md`
+- `docs/workspaces.md`
+- `docs/tool-system.md`
+- `docs/source-cache.md`
+- `docs/github-automation.md`
+- `docs/coding-workflow.md`
 
 Specialist-agent docs:
 

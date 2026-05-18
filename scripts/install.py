@@ -27,7 +27,7 @@ OutputFunc = Callable[[str], None]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 PRODUCTION_TARGET = Path("/opt/agent-sam")
-APP_USER = "root"
+APP_USER = "agentos"
 INSTALL_REPO_SLUG = "samlaggz/Agent-Sam"
 INSTALL_REPO_REF = "main"
 INSTALL_TOKEN_ENV_VAR = "AGENT_SAM_GITHUB_TOKEN"
@@ -321,8 +321,12 @@ def _run_production_install(
         ):
             return 1
 
-    printer.step("Bootstrapping the application as root")
-    bootstrap_command = ["bash", "-lc", f"cd {shlex.quote(rendered_target)} && bash deployment/linux/bootstrap-app.sh"]
+    printer.step(f"Bootstrapping the application as {APP_USER}")
+    bootstrap_command = _command_as_user(
+        APP_USER,
+        f"cd {shlex.quote(rendered_target)} && bash deployment/linux/bootstrap-app.sh",
+        is_root=is_root,
+    )
     if _run_with_output(bootstrap_command, command_runner=command_runner, output=output, dry_run=options.dry_run).returncode != 0:
         return 1
 
@@ -361,10 +365,15 @@ def _run_production_install(
         output("Skipping service enable/restart.")
 
     printer.step("Running production doctor")
-    doctor_command = ["bash", "-lc", (
-        f"cd {shlex.quote(str(options.target))} && "
-        f"{shlex.quote(str(options.target))}/.venv/bin/python -m scripts.doctor --production --env-path {shlex.quote(rendered_env_path)} --app-dir {shlex.quote(rendered_target)}"
-    )]
+    doctor_command = _command_as_user(
+        APP_USER,
+        (
+            f"cd {shlex.quote(str(options.target))} && "
+            f"source .venv/bin/activate && "
+            f"python3 -m scripts.doctor --production --env-path {shlex.quote(rendered_env_path)} --app-dir {shlex.quote(rendered_target)}"
+        ),
+        is_root=is_root,
+    )
     if _run_with_output(doctor_command, command_runner=command_runner, output=output, dry_run=options.dry_run).returncode != 0:
         return 1
 
@@ -379,7 +388,7 @@ def _run_production_install(
     output("Agent_Sam install summary")
     output(f"Target: {rendered_target}")
     output(f"Environment file: {rendered_env_path}")
-    output("Host user: root")
+    output(f"Host user: {APP_USER}")
     output("Services started." if start_services_choice and not options.skip_start else "Services not started.")
     output("Installer finished successfully.")
     return 0

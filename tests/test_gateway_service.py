@@ -645,3 +645,88 @@ async def test_gateway_agents_and_models_commands(
     assert "coding_agent" in agents_response.text
     assert "Configured models:" in models_response.text
     assert "openrouter/" in models_response.text
+
+
+async def test_gateway_code_events_and_workspace_commands(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, harness_enabled=True),
+    )
+
+    code_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/code Fix the failing API tests", gateway_name="cli")
+    )
+
+    assert code_response.task_id is not None
+
+    async with session_factory() as session:
+        task = await session.get(Task, code_response.task_id)
+        assert task is not None
+        assert task.metadata_json["requested_agent"] == "coding_agent"
+        assert task.metadata_json["workflow"] == "code"
+
+        from db.repositories import append_event
+
+        await append_event(
+            session,
+            task_id=task.id,
+            agent_run_id=None,
+            agent_slug="coding_agent",
+            event_type="tool_call",
+            content="Read file",
+        )
+
+    events_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/events {code_response.task_id}", gateway_name="cli")
+    )
+    workspace_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/workspace {code_response.task_id}", gateway_name="cli")
+    )
+
+    assert "Recent events for task" in events_response.text
+    assert "tool_call" in events_response.text
+    assert "Workspace for task" in workspace_response.text
+
+
+async def test_gateway_test_and_pr_commands_create_followup_tasks(
+    session_factory: async_sessionmaker[AsyncSession],
+    workspace: Workspace,
+    user: User,
+) -> None:
+    service = build_gateway_service(
+        session_factory,
+        workspace,
+        user,
+        settings=Settings(_env_file=None, harness_enabled=True),
+    )
+
+    code_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, "/code Implement a new lint command", gateway_name="cli")
+    )
+    assert code_response.task_id is not None
+
+    test_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/test {code_response.task_id}", gateway_name="cli")
+    )
+    pr_response = await service.handle_incoming_message(
+        build_incoming_message(workspace, user, f"/pr {code_response.task_id}", gateway_name="cli")
+    )
+
+    assert test_response.task_id is not None
+    assert pr_response.task_id is not None
+
+    async with session_factory() as session:
+        test_task = await session.get(Task, test_response.task_id)
+        pr_task = await session.get(Task, pr_response.task_id)
+        assert test_task is not None
+        assert pr_task is not None
+        assert test_task.parent_task_id == code_response.task_id
+        assert pr_task.parent_task_id == code_response.task_id
+        assert test_task.metadata_json["requested_agent"] == "testing_agent"
+        assert pr_task.metadata_json["workflow"] == "pr"

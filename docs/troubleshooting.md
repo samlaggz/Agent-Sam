@@ -8,6 +8,14 @@
 - Budget downgrades are too aggressive: raise `MAX_COST_PER_TASK_USD` or `DAILY_MODEL_BUDGET_USD`.
 - Generated sub-agent creation fails: check whether the proposal includes admin-only tools such as `safe_shell` without explicit approval metadata.
 
+## Harness runtime
+
+- Harness tasks fail instantly on Linux production: check whether the service is still running as `root`. The harness refuses root execution.
+- `/workspace <task_id>` shows an empty repo: the task did not request repo seeding, or the task was not routed through the coding/testing harness path.
+- `/events <task_id>` shows no events: the task likely ran through the legacy LangGraph path instead of the harness path.
+- `opensrc` lookups fail: install `opensrc`, confirm `OPENSRC_COMMAND`, and run `python -m scripts.source_cache path pypi:requests`.
+- Browser tasks pause unexpectedly: login, submit, upload, and CAPTCHA-like pages intentionally stop for approval or handoff.
+
 ## Worker looks stuck
 
 The worker is polling the task queue. It now logs:

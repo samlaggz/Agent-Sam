@@ -93,21 +93,28 @@ class SpecialistAgentRuntime:
             await session.commit()
             await session.refresh(agent_run)
 
-        planning_model = LiteLLMPlanningModel(
-            self._settings,
-            self._session_factory,
-            profile=profile,
-            model_router=self._model_router,
-            model_override=budget_decision.approved_model,
-        )
-        runner = AgentGraphRunner(
-            self._session_factory,
-            settings=self._settings,
-            planning_model=planning_model,
-            skills_root=Path.cwd() / "skills",
-            allowed_tool_roots=_default_allowed_tool_roots(),
-        )
-        result = await runner.run_task(task_id)
+        if self._should_use_harness(task, route_decision.agent_slug):
+            result = await self._run_harness_task(
+                task=task,
+                agent_run=agent_run,
+                agent_slug=route_decision.agent_slug,
+            )
+        else:
+            planning_model = LiteLLMPlanningModel(
+                self._settings,
+                self._session_factory,
+                profile=profile,
+                model_router=self._model_router,
+                model_override=budget_decision.approved_model,
+            )
+            runner = AgentGraphRunner(
+                self._session_factory,
+                settings=self._settings,
+                planning_model=planning_model,
+                skills_root=Path.cwd() / "skills",
+                allowed_tool_roots=_default_allowed_tool_roots(),
+            )
+            result = await runner.run_task(task_id)
         actual_cost = await self._finalize_agent_run(task_id=task_id, agent_run_id=agent_run.id, result=result)
         return AgentRunResult(
             task_id=task_id,
@@ -165,6 +172,61 @@ class SpecialistAgentRuntime:
 
     def _should_run_qa(self, task: Task, agent_run: AgentRun) -> bool:
         return bool(task.priority == "urgent" or get_agent_profile(agent_run.agent_slug).risk_level == "high")
+
+    def _should_use_harness(self, task: Task, agent_slug: str) -> bool:
+        if not self._settings.harness_enabled:
+            return False
+        metadata = dict(task.metadata_json or {})
+        if bool(metadata.get("harness_requested", False)):
+            return True
+        if metadata.get("workflow") in {"code", "test", "pr"}:
+            return True
+        if metadata.get("requested_agent") in {"coding_agent", "testing_agent", "server_ops_agent"}:
+            return True
+        text = f"{task.title}\n{task.description or ''}".lower()
+        browser_keywords = ("browser", "login", "website", "click", "type", "form")
+        server_keywords = ("nginx", "ssl", "certbot", "domain", "service", "systemd")
+        if agent_slug in {"coding_agent", "testing_agent", "server_ops_agent"}:
+            return True
+        if agent_slug == "research_agent" and any(keyword in text for keyword in browser_keywords):
+            return True
+        return any(keyword in text for keyword in server_keywords)
+
+    async def _run_harness_task(self, *, task: Task, agent_run: AgentRun, agent_slug: str) -> AgentRunResult:
+        from harness.events import EventStore
+        from harness.loop import HarnessLoop
+        from harness.model_adapter import LiteLLMModelAdapter
+        from harness.tool_executor import ToolExecutor
+        from harness.workspace import WorkspaceManager
+
+        workspace_manager = WorkspaceManager(self._settings, self._session_factory)
+        if self._should_seed_workspace_repo(agent_slug, task):
+            workspace = await workspace_manager.create_task_workspace(task.id)
+            if not any(workspace.repo.iterdir()):
+                await workspace_manager.copy_repo_to_workspace(Path.cwd(), task.id)
+        event_store = EventStore(self._session_factory)
+        model_adapter = LiteLLMModelAdapter(self._settings, self._session_factory, model_router=self._model_router)
+        tool_executor = ToolExecutor(self._settings, self._session_factory, event_store)
+        loop = HarnessLoop(
+            self._settings,
+            self._session_factory,
+            workspace_manager,
+            event_store,
+            model_adapter,
+            tool_executor,
+        )
+        return await loop.run_task(
+            task_id=task.id,
+            agent_slug=agent_slug,
+            agent_run_id=agent_run.id,
+            initial_user_message=f"{task.title}\n{task.description or ''}".strip(),
+        )
+
+    def _should_seed_workspace_repo(self, agent_slug: str, task: Task) -> bool:
+        metadata = dict(task.metadata_json or {})
+        if metadata.get("workflow") in {"code", "test", "pr"}:
+            return True
+        return agent_slug in {"coding_agent", "testing_agent", "qa_reviewer_agent"}
 
 
 def _estimate_cost_hint(cost_level: str) -> float:

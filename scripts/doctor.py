@@ -139,6 +139,7 @@ async def run_doctor(
         checks.append(DoctorCheck("FAIL", f"Settings parsing failed: {redact_sensitive_text(str(exc))}"))
 
     if settings is not None:
+        checks.extend(_check_harness_configuration(settings, production=production))
         checks.extend(await _check_database_stack(settings, production=production))
 
     for check in checks:
@@ -449,6 +450,8 @@ def _check_runtime_imports() -> list[DoctorCheck]:
     for module_name, label in (
         ("workers.main", "Worker runtime imports"),
         ("workers.tasks", "Worker task handler imports"),
+        ("harness.loop", "Harness loop imports"),
+        ("scripts.source_cache", "Source cache CLI imports"),
         ("langgraph", "LangGraph import works"),
         ("litellm", "LiteLLM import works"),
     ):
@@ -458,6 +461,84 @@ def _check_runtime_imports() -> list[DoctorCheck]:
             checks.append(DoctorCheck("FAIL", f"{label}: {redact_sensitive_text(str(exc))}"))
         else:
             checks.append(DoctorCheck("OK", label))
+    return checks
+
+
+def _check_harness_configuration(settings: Settings, *, production: bool) -> list[DoctorCheck]:
+    checks: list[DoctorCheck] = []
+    if not bool(getattr(settings, "harness_enabled", False)):
+        checks.append(DoctorCheck("OK", "Harness is disabled"))
+        return checks
+
+    runtime_name = str(getattr(settings, "agent_runtime", "local")).strip().lower()
+    if runtime_name in {"local", "docker", "remote"}:
+        checks.append(DoctorCheck("OK", f"Harness runtime is configured as {runtime_name}"))
+    else:
+        checks.append(DoctorCheck("FAIL", f"Invalid AGENT_RUNTIME value: {getattr(settings, 'agent_runtime', '')}"))
+
+    workspaces_dir = Path(str(getattr(settings, "agent_workspaces_dir", "./workspaces"))).expanduser().resolve()
+    try:
+        workspaces_dir.mkdir(parents=True, exist_ok=True)
+        probe = workspaces_dir / ".doctor-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        checks.append(DoctorCheck("FAIL", f"Harness workspaces dir is not writable: {redact_sensitive_text(str(exc))}"))
+    else:
+        checks.append(DoctorCheck("OK", f"Harness workspaces dir writable: {_display_path(workspaces_dir)}"))
+
+    if production and os.name != "nt":
+        geteuid = getattr(os, "geteuid", None)
+        if callable(geteuid) and geteuid() == 0:
+            checks.append(DoctorCheck("FAIL", "Harness runtime must not run as root"))
+            checks.append(DoctorCheck("FIX", "Run the app under a non-root service account before enabling HARNESS_ENABLED"))
+        else:
+            checks.append(DoctorCheck("OK", "Harness runtime is not running as root"))
+
+    if bool(getattr(settings, "browser_enabled", False)):
+        try:
+            importlib.import_module("playwright.async_api")
+        except Exception as exc:
+            checks.append(DoctorCheck("FAIL", f"Browser runtime unavailable: {redact_sensitive_text(str(exc))}"))
+            checks.append(DoctorCheck("FIX", "Install Playwright and Chromium before enabling browser actions"))
+        else:
+            checks.append(DoctorCheck("OK", "Browser runtime imports work"))
+
+    if bool(getattr(settings, "source_cache_enabled", False)):
+        source_cache_dir = Path(str(getattr(settings, "source_cache_dir", "./source-cache"))).expanduser().resolve()
+        try:
+            source_cache_dir.mkdir(parents=True, exist_ok=True)
+            probe = source_cache_dir / ".doctor-write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError as exc:
+            checks.append(DoctorCheck("FAIL", f"Source cache dir is not writable: {redact_sensitive_text(str(exc))}"))
+        else:
+            checks.append(DoctorCheck("OK", f"Source cache dir writable: {_display_path(source_cache_dir)}"))
+
+        opensrc_command = str(getattr(settings, "opensrc_command", "opensrc"))
+        ripgrep_command = str(getattr(settings, "ripgrep_command", "rg"))
+
+        if shutil.which(opensrc_command):
+            checks.append(DoctorCheck("OK", f"opensrc command available: {opensrc_command}"))
+        else:
+            checks.append(DoctorCheck("FAIL", f"opensrc command not found: {opensrc_command}"))
+            checks.append(DoctorCheck("FIX", "Install opensrc or update OPENSRC_COMMAND"))
+
+        if shutil.which(ripgrep_command):
+            checks.append(DoctorCheck("OK", f"ripgrep command available: {ripgrep_command}"))
+        else:
+            checks.append(DoctorCheck("FAIL", f"ripgrep command not found: {ripgrep_command}"))
+            checks.append(DoctorCheck("FIX", "Install ripgrep or update RIPGREP_COMMAND"))
+
+    github_auto_create_pr = bool(getattr(settings, "github_auto_create_pr", False))
+    github_token = str(getattr(settings, "github_token", ""))
+    if github_auto_create_pr and not github_token.strip():
+        checks.append(DoctorCheck("FAIL", "GITHUB_TOKEN is required when GITHUB_AUTO_CREATE_PR is enabled"))
+        checks.append(DoctorCheck("FIX", _fix_command_for_env_key("GITHUB_TOKEN", production=production)))
+    elif github_token.strip():
+        checks.append(DoctorCheck("OK", "GITHUB_TOKEN is configured"))
+
     return checks
 
 

@@ -26,3 +26,10 @@ Execution records are stored in:
 - `agent_run_steps`
 - `agent_evaluations`
 - `learning_events`
+
+When the harness is enabled, specialist execution can also emit:
+
+- `agent_events`
+- `workspaces_runtime`
+
+The harness does not replace the specialist router. Routing still happens first, then selected task types drop into the harness loop for action planning, tool execution, approvals, and trace export.

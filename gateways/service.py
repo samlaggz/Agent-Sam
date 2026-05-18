@@ -14,6 +14,7 @@ from agents.registry import get_agent_profile, list_agents
 from agents.router import RouteRequest, RouterAgent
 from app.config import Settings
 from db.models import Approval, Message, Task, ToolCall, User, Workspace
+from db.repositories import list_events as list_agent_events
 from db.task_queue import (
     ACTIVE_TASK_STATUSES,
     TASK_PRIORITIES,
@@ -28,6 +29,7 @@ from db.task_queue import (
     resume_task,
 )
 from gateways.base import GatewayAttachment, GatewayResponse, IncomingGatewayMessage
+from harness.workspace import WorkspaceManager
 from services.agent_learning_service import approve_skill_proposal, approve_sub_agent_proposal
 from services.budget_service import estimate_model_cost_level
 from services.model_router import ModelExecutionRequest, ModelRouter, infer_provider
@@ -143,6 +145,11 @@ class AgentGatewayService:
             "resume": self._handle_resume_command,
             "approve": self._handle_approve_command,
             "cancel": self._handle_cancel_command,
+            "code": self._handle_code_command,
+            "test": self._handle_test_command,
+            "pr": self._handle_pr_command,
+            "events": self._handle_events_command,
+            "workspace": self._handle_workspace_command,
             "agents": self._handle_agents_command,
             "agent": self._handle_agent_command,
             "route": self._handle_route_command,
@@ -423,6 +430,143 @@ class AgentGatewayService:
             lines.append(f"- {profile.slug}: {profile.description}")
         return GatewayResponse(text="\n".join(lines))
 
+    async def _handle_code_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        if not arguments:
+            return GatewayResponse(text="Usage: /code <task description>")
+        task = await self._create_task_from_text(
+            session,
+            incoming,
+            message,
+            task_text=" ".join(arguments).strip(),
+            metadata_overrides={"requested_agent": "coding_agent", "harness_requested": True, "workflow": "code"},
+        )
+        route_preview = self._route_task_preview(task.title, task.description or "")
+        return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
+
+    async def _handle_test_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        if len(arguments) != 1:
+            return GatewayResponse(text="Usage: /test <task_id>")
+        task_id = self._parse_uuid(arguments[0])
+        if task_id is None:
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
+        parent_task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
+        if parent_task is None:
+            return GatewayResponse(text="Task not found in the selected workspace.")
+        task = await create_task_request(
+            session,
+            workspace_id=incoming.workspace_id,
+            parent_task_id=parent_task.id,
+            title=f"Test: {parent_task.title}",
+            description=f"Run focused tests and validation for task {parent_task.id}: {parent_task.title}",
+            created_by_user_id=incoming.user_id,
+            metadata_json=self._build_task_request_metadata(
+                incoming,
+                message,
+                {"requested_agent": "testing_agent", "harness_requested": True, "workflow": "test", "target_task_id": str(parent_task.id)},
+            ),
+        )
+        await self._link_message_to_task(session, message, task.id)
+        route_preview = self._route_task_preview(task.title, task.description or "")
+        return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
+
+    async def _handle_pr_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        if len(arguments) != 1:
+            return GatewayResponse(text="Usage: /pr <task_id>")
+        task_id = self._parse_uuid(arguments[0])
+        if task_id is None:
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
+        parent_task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
+        if parent_task is None:
+            return GatewayResponse(text="Task not found in the selected workspace.")
+        task = await create_task_request(
+            session,
+            workspace_id=incoming.workspace_id,
+            parent_task_id=parent_task.id,
+            title=f"Prepare PR: {parent_task.title}",
+            description=f"Create a branch, commit changes, push, and open a PR for task {parent_task.id}: {parent_task.title}",
+            created_by_user_id=incoming.user_id,
+            metadata_json=self._build_task_request_metadata(
+                incoming,
+                message,
+                {"requested_agent": "coding_agent", "harness_requested": True, "workflow": "pr", "target_task_id": str(parent_task.id)},
+            ),
+        )
+        await self._link_message_to_task(session, message, task.id)
+        route_preview = self._route_task_preview(task.title, task.description or "")
+        return GatewayResponse(text=self._format_task_confirmation(task, route_preview=route_preview), task_id=task.id)
+
+    async def _handle_events_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del incoming
+        if len(arguments) != 1:
+            return GatewayResponse(text="Usage: /events <task_id>")
+        task_id = self._parse_uuid(arguments[0])
+        if task_id is None:
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
+        task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
+        if task is None:
+            return GatewayResponse(text="Task not found in the selected workspace.")
+        events = await list_agent_events(session, task_id=task.id, limit=10)
+        if not events:
+            return GatewayResponse(text=f"No harness events recorded for task {task.id}.", task_id=task.id)
+        lines = [f"Recent events for task {task.id}:"]
+        for event in events:
+            lines.append(f"[{event.sequence}] {event.event_type}: {event.content}")
+        await self._link_message_to_task(session, message, task.id)
+        return GatewayResponse(text="\n".join(lines), task_id=task.id)
+
+    async def _handle_workspace_command(
+        self,
+        session: AsyncSession,
+        message: Message,
+        incoming: IncomingGatewayMessage,
+        arguments: list[str],
+    ) -> GatewayResponse:
+        del incoming
+        if len(arguments) != 1:
+            return GatewayResponse(text="Usage: /workspace <task_id>")
+        task_id = self._parse_uuid(arguments[0])
+        if task_id is None:
+            return GatewayResponse(text="Task IDs must be valid UUID values.")
+        task = await self._load_task(session, workspace_id=message.workspace_id, task_id=task_id)
+        if task is None:
+            return GatewayResponse(text="Task not found in the selected workspace.")
+        manager = WorkspaceManager(self._settings, self._session_factory)
+        layout = await manager.get_task_workspace(task.id)
+        await self._link_message_to_task(session, message, task.id)
+        return GatewayResponse(
+            text=(
+                f"Workspace for task {task.id}\n"
+                f"Root: {layout.root}\n"
+                f"Repo: {layout.repo}\n"
+                f"Events: {layout.events_jsonl}"
+            ),
+            task_id=task.id,
+        )
+
     async def _handle_agent_command(
         self,
         session: AsyncSession,
@@ -650,6 +794,7 @@ class AgentGatewayService:
         message: Message,
         *,
         task_text: str | None = None,
+        metadata_overrides: dict[str, Any] | None = None,
     ) -> Task:
         normalized_text = (task_text or incoming.text).strip()
         if not normalized_text:
@@ -668,21 +813,32 @@ class AgentGatewayService:
             title=title,
             description=description,
             created_by_user_id=incoming.user_id,
-            metadata_json={
-                "source": incoming.gateway_name,
-                "source_chat_id": incoming.gateway_chat.gateway_chat_id,
-                "source_user_id": incoming.gateway_user.gateway_user_id,
-                "gateway_name": incoming.gateway_name,
-                "gateway_message_id": incoming.gateway_message_id,
-                "gateway_chat_id": incoming.gateway_chat.gateway_chat_id,
-                "gateway_user_id": incoming.gateway_user.gateway_user_id,
-                "gateway_username": incoming.gateway_user.username,
-                "gateway_message_record_id": str(message.id),
-                "attachments": self._serialize_attachments(incoming.attachments),
-            },
+            metadata_json=self._build_task_request_metadata(incoming, message, metadata_overrides),
         )
         await self._link_message_to_task(session, message, task.id)
         return task
+
+    def _build_task_request_metadata(
+        self,
+        incoming: IncomingGatewayMessage,
+        message: Message,
+        metadata_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        metadata = {
+            "source": incoming.gateway_name,
+            "source_chat_id": incoming.gateway_chat.gateway_chat_id,
+            "source_user_id": incoming.gateway_user.gateway_user_id,
+            "gateway_name": incoming.gateway_name,
+            "gateway_message_id": incoming.gateway_message_id,
+            "gateway_chat_id": incoming.gateway_chat.gateway_chat_id,
+            "gateway_user_id": incoming.gateway_user.gateway_user_id,
+            "gateway_username": incoming.gateway_user.username,
+            "gateway_message_record_id": str(message.id),
+            "attachments": self._serialize_attachments(incoming.attachments),
+        }
+        if metadata_overrides:
+            metadata.update(metadata_overrides)
+        return metadata
 
     async def _link_message_to_task(self, session: AsyncSession, message: Message, task_id: UUID) -> None:
         message.task_id = task_id
@@ -812,7 +968,12 @@ class AgentGatewayService:
             "/pause <task_id>\n"
             "/resume <task_id>\n"
             "/approve <approval_id>\n"
-            "/cancel <task_id>"
+            "/cancel <task_id>\n"
+            "/code <task description>\n"
+            "/test <task_id>\n"
+            "/pr <task_id>\n"
+            "/events <task_id>\n"
+            "/workspace <task_id>"
         )
 
     def _parse_uuid(self, raw_value: str) -> UUID | None:

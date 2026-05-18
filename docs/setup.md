@@ -52,6 +52,20 @@ The wizard now also asks for:
 - `ALLOW_SUB_AGENT_AUTO_CREATION`
 - `ENABLE_WEB_RESEARCH`
 
+When you enable the harness runtime, the wizard also writes:
+
+- `HARNESS_ENABLED`
+- `AGENT_RUNTIME`
+- `AGENT_WORKSPACES_DIR`
+- `BROWSER_ENABLED`
+- `SOURCE_CACHE_ENABLED`
+- `SOURCE_CACHE_DIR`
+- `OPENSRC_COMMAND`
+- `RIPGREP_COMMAND`
+- `GITHUB_AUTO_CREATE_PR`
+- `GITHUB_TOKEN`
+- `GITHUB_REPOSITORY`
+
 When `ENABLE_WEB_RESEARCH=true`, the runtime can register live `web_search` and `web_open` tools for research-oriented tasks. Keep it disabled if you want the agent to avoid public internet access entirely.
 
 ## CLI-only mode
@@ -95,3 +109,17 @@ sudo systemctl start agent-api agent-worker agent-telegram
 ```
 
 Use `python -m scripts.setup --dry-run` to preview the menu without modifying `.env` or executing commands.
+
+## Harness notes
+
+Recommended harness settings for local coding tasks:
+
+```powershell
+HARNESS_ENABLED=true
+AGENT_RUNTIME=local
+AGENT_WORKSPACES_DIR=./workspaces
+SOURCE_CACHE_ENABLED=true
+SOURCE_CACHE_DIR=./source-cache
+```
+
+The setup wizard does not auto-bypass approvals. It only writes the runtime configuration and surfaces manual install commands for `opensrc` and `ripgrep` when you ask for them.
